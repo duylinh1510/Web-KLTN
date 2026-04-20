@@ -1,4 +1,11 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  Get,
+} from '@nestjs/common';
 import { Neo4jService } from './neo4j.service';
 import { ConnectNeo4jDto } from './dto/connect-neo4j.dto';
 
@@ -10,13 +17,19 @@ export class Neo4jController {
   @HttpCode(HttpStatus.OK)
   async connect(@Body() dto: ConnectNeo4jDto) {
     await this.neo4jService.connect(dto.uri, dto.user, dto.password);
-    return { status: 'Thành công', message: `Đã kết nối tới ${dto.uri}` };
+    return { status: 'success', message: `Đã kết nối tới ${dto.uri}` };
   }
 
   @Post('disconnect')
   @HttpCode(HttpStatus.OK)
   async disconnect() {
     await this.neo4jService.disconnect();
-    return { status: 'Thành công', message: 'Đã ngắt kết nối' };
+    return { status: 'success', message: 'Đã ngắt kết nối' };
+  }
+
+  @Get('status')
+  status() {
+    const { connected, uri } = this.neo4jService.getStatus();
+    return { status: 'success', connected, uri };
   }
 }

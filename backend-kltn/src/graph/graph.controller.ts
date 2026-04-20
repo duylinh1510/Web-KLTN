@@ -1,4 +1,11 @@
-import { Controller, Post, Body, Inject } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Inject,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { Neo4jService } from '../neo4j/neo4j.service';
 import type { IAiService } from '../ai/ai.interface';
 import { AI_SERVICE_TOKEN } from '../ai/ai.interface';
@@ -19,7 +26,10 @@ export class GraphController {
       cypherQuery = await this.aiService.generateCypher(dto.prompt);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      return { status: 'Lỗi', message: `AI failed to generate Cypher: ${msg}` };
+      throw new HttpException(
+        `AI failed to generate Cypher: ${msg}`,
+        HttpStatus.BAD_GATEWAY,
+      );
     }
 
     const session = this.neo4jService.getReadSession();
@@ -28,14 +38,17 @@ export class GraphController {
       const { nodes, links, scalars } = formatRecords(result.records);
 
       return {
-        status: 'Thành công',
+        status: 'success',
         generatedCypher: cypherQuery,
         graphData: { nodes, links },
         scalars,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      return { status: 'Lỗi', message: msg };
+      throw new HttpException(
+        `Cypher execution error: ${msg}`,
+        HttpStatus.BAD_REQUEST,
+      );
     } finally {
       await session.close();
     }

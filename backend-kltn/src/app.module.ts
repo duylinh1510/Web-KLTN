@@ -5,10 +5,12 @@ import { AppService } from './app.service';
 import { Neo4jModule } from './neo4j/neo4j.module';
 import { GraphModule } from './graph/graph.module';
 import { AiModule } from './ai/ai.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
     Neo4jModule,
     GraphModule,
     AiModule,
