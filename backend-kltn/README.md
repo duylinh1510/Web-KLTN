@@ -14,9 +14,12 @@ NestJS không tự suy luận AI. Mọi suy luận được delegate cho FastAPI
 
 ## Kiến trúc hệ thống
 
+Hệ thống có **2 FastAPI microservice độc lập** chạy local, mỗi service bọc 1 file Python:
+
 ```
-                             ┌──── [FastAPI localhost:8000] ────┬─── Llama (classify cột CSV)
-                             │                                  └─── GNN model (predict fraud)
+                             ┌──── [FastAPI :8000 — Pipeline Service]  (pipeline.py → Llama classify cột)
+                             │
+                             ├──── [FastAPI :8001 — GNN Service]       (gnn_service.py → predict fraud)
                              │
  [React FE] ──HTTP──▶ [NestJS BE — Orchestrator]
                              │
@@ -29,14 +32,23 @@ NestJS không tự suy luận AI. Mọi suy luận được delegate cho FastAPI
 
 **Phân vai:**
 
-| Thành phần              | Vai trò                                                                                         |
-| ----------------------- | ----------------------------------------------------------------------------------------------- |
-| React FE                | Giao diện. Không gọi AI service trực tiếp.                                                      |
-| **NestJS BE**           | Orchestrator: nhận request, điều phối AI service, quản lý Neo4j driver, chuẩn hoá response.     |
-| FastAPI (localhost)     | Bọc `pipeline.py` (Llama classify cột) và GNN inference. Bind loopback only, không đụng Neo4j.  |
-| Colab + Ngrok           | Chạy LLM Text2Cypher (cần GPU). Tunnel Ngrok để NestJS gọi được.                                 |
-| Neo4j Local             | Lưu graph. NestJS là client duy nhất; FastAPI không connect.                                     |
-| `uploads/`              | CSV user upload. NestJS ghi, FastAPI đọc qua `filePath` tuyệt đối (cùng máy).                   |
+| Thành phần                    | Vai trò                                                                                                     |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| React FE                      | Giao diện. Không gọi AI service trực tiếp.                                                                  |
+| **NestJS BE**                 | Orchestrator: nhận request, điều phối AI service, quản lý Neo4j driver, chuẩn hoá response.                 |
+| **Pipeline Service** `:8000`  | Bọc `pipeline.py` (Llama phân loại cột + chuẩn hoá CSV). Bind loopback only, không đụng Neo4j.              |
+| **GNN Service** `:8001`       | Bọc `gnn_service.py` (load GNN weights + inference fraud score). Bind loopback only, không đụng Neo4j.      |
+| Colab + Ngrok                 | Chạy LLM Text2Cypher (cần GPU). Tunnel Ngrok để NestJS gọi được.                                             |
+| Neo4j Local                   | Lưu graph. NestJS là client duy nhất; 2 FastAPI service không connect Neo4j.                                 |
+| `uploads/`                    | CSV user upload. NestJS ghi, Pipeline Service đọc qua `filePath` tuyệt đối (cùng máy).                      |
+
+**Tại sao tách 2 service?**
+
+- **Không đụng code Python đang có**: mỗi file `.py` tự wrap FastAPI standalone.
+- **Lifecycle độc lập**: retrain GNN → restart `:8001`, không ảnh hưởng Pipeline `:8000`.
+- **Memory isolation**: Llama và GNN load trong 2 process tách, tránh OOM khi model lớn.
+- **Crash isolation**: 1 service chết không kéo cái kia chết theo.
+- **Dễ migrate sang Colab**: nếu về sau GNN model quá lớn, chỉ đổi `GNN_BASE_URL` sang Ngrok URL, NestJS không sửa code.
 
 ---
 
@@ -113,18 +125,19 @@ Sau khi graph đã dựng (luồng A), luồng B chạy mô hình GNN để gán
 
 Đây là **đóng góp khoa học chính** của đề tài. Luồng A là dữ liệu, luồng C là giao diện, luồng B là lõi.
 
-## 2. Deploy strategy (KHUYẾN NGHỊ: chạy local trong FastAPI)
+## 2. Deploy strategy — GNN Service riêng ở `:8001`
 
-GNN model được **train trên Colab** (cần GPU), sau đó export weights (`.pt`) → copy về máy → FastAPI load ở startup và inference bằng CPU.
+GNN model được **train trên Colab** (cần GPU), sau đó export weights (`.pt`) → copy về máy → `gnn_service.py` load ở startup và inference bằng CPU. Service này chạy trên **port 8001**, tách biệt hoàn toàn với Pipeline Service ở `:8000`.
 
-| Tiêu chí         | Local FastAPI (CHỌN)                                    | Colab + Ngrok riêng                      |
-| ---------------- | ------------------------------------------------------- | ---------------------------------------- |
-| Phụ thuộc Ngrok  | Không (chỉ Text2Cypher cần Ngrok)                       | Có — 2 Ngrok cùng lúc, rủi ro x2         |
-| Tốc độ inference | Vài giây cho graph <50k node trên CPU                   | Nhanh hơn nhưng có network overhead      |
-| Độ ổn định demo  | Deterministic, không sợ Colab disconnect                | Phụ thuộc Colab session                  |
-| Độ khó setup     | Cần `torch.save`/`load_state_dict`                      | Dễ hơn (copy notebook chạy là được)      |
+| Tiêu chí                     | GNN Service local `:8001` (CHỌN)                         | GNN trên Colab + Ngrok                    |
+| ---------------------------- | -------------------------------------------------------- | ----------------------------------------- |
+| Phụ thuộc Ngrok              | Không (chỉ Text2Cypher cần Ngrok)                        | Có — 2 Ngrok cùng lúc, rủi ro x2          |
+| Tốc độ inference             | Vài giây cho graph <50k node trên CPU                    | Nhanh hơn nhưng có network overhead       |
+| Độ ổn định demo              | Deterministic, không sợ Colab disconnect                 | Phụ thuộc Colab session                   |
+| Độ khó setup                 | Cần `torch.save` + `load_state_dict` trong file Python   | Dễ hơn (copy notebook chạy là được)       |
+| Có thể swap lên Colab sau?   | Có — chỉ đổi `GNN_BASE_URL` trong `.env`                 | —                                         |
 
-Nếu model quá lớn (>1GB) hoặc máy thiếu RAM → fallback sang Colab + Ngrok; nhưng với scale đồ án, local CPU là đủ.
+Nếu model quá lớn (>1GB) hoặc máy thiếu RAM → fallback: đổi `GNN_BASE_URL=https://xxx.ngrok.io` trỏ sang Colab. NestJS không sửa code vì đã decouple qua env.
 
 ## 3. Luồng dữ liệu `/api/data/score`
 
@@ -138,7 +151,7 @@ POST /api/data/score { threshold?: 0.5 }
 NestJS: đọc graph từ Neo4j → export JSON { nodes, edges, features }
         │
         ▼
-FastAPI /predict-fraud: nhận JSON → chạy GNN inference → trả { tx_id: score } map
+GNN Service :8001 /predict-fraud → chạy GNN inference → trả { tx_id: score } map
         │
         ▼
 NestJS: UNWIND batch SET t.fraud_score, t.is_fraud, t.scored_at
@@ -150,14 +163,15 @@ Update :DatasetMeta { scoredAt, fraudThreshold, gnnVersion, fraudCount, avgScore
 Response { scoredCount, fraudCount, avgScore, durationMs }
 ```
 
-**Tách rời hoàn toàn Neo4j khỏi FastAPI**: FastAPI không biết Neo4j tồn tại, chỉ nhận graph dạng JSON và trả score. Tránh chia sẻ credentials, dễ swap GNN implementation.
+**GNN Service không đụng Neo4j**: chỉ nhận graph dạng JSON và trả score. Tránh chia sẻ credentials, dễ swap implementation, dễ unit test.
 
 ## 4. Các quyết định thiết kế
 
 - **Manual trigger, không auto-run sau build**: user bấm nút riêng → demo moment đẹp ("Đây là graph thô, bây giờ cho GNN chạy → các node đỏ lên!").
 - **Cho phép re-score nhiều lần**: mỗi lần ghi đè `fraud_score` cũ, cập nhật `scored_at`. Cho phép thử threshold khác nhau mà không rebuild graph.
 - **Threshold trong body request**: `threshold` là tham số per-request, mặc định lấy `FRAUD_THRESHOLD` từ `.env`. FE có thể có slider cho thầy thấy ngưỡng ảnh hưởng kết quả.
-- **Graph-structural features tự động**: FastAPI (trước khi đưa vào GNN) tự tính degree, clustering coefficient, PageRank cho mỗi node và ghép vào feature vector. NestJS không biết việc này.
+- **Graph-structural features tự động**: `gnn_service.py` (trước khi đưa vào GNN) tự tính degree, clustering coefficient, PageRank cho mỗi node và ghép vào feature vector. NestJS không biết việc này.
+- **Module NestJS tách biệt**: `fraud-scoring/` có client `gnn.client.ts` chỉ gọi `:8001`, không đụng tới `pipeline.client.ts` của luồng A.
 
 ---
 
@@ -197,9 +211,23 @@ POST /graph/query { prompt }
 
 - Node.js 18+
 - Neo4j 5+ chạy local (mặc định `bolt://localhost:7687`). **Khuyến nghị cài plugin APOC** (dùng `apoc.merge.node` cho dynamic label).
-- Python 3.10+ và FastAPI (repo riêng) chạy `http://127.0.0.1:8000` — bind **loopback only**.
-- File weights GNN (`gnn.pt` hoặc tương tự) đã train xong, copy vào FastAPI repo.
+- Python 3.10+ với **2 FastAPI microservice** chạy song song, **bind loopback only**:
+  - **Pipeline Service** (`pipeline.py`) → `http://127.0.0.1:8000` (Llama classify + chuẩn hoá CSV).
+  - **GNN Service** (`gnn_service.py`) → `http://127.0.0.1:8001` (load weights + inference fraud).
+- File weights GNN (`gnn.pt` hoặc tương tự) đã train xong, copy vào thư mục của `gnn_service.py`.
 - (Tuỳ chọn) Link Ngrok/Cloudflare Tunnel tới Colab chạy Text2Cypher LLM.
+
+Khởi động 2 FastAPI service (mỗi cái trong 1 terminal):
+
+```bash
+# Terminal 1 — Pipeline Service
+uvicorn pipeline:app --host 127.0.0.1 --port 8000
+
+# Terminal 2 — GNN Service
+uvicorn gnn_service:app --host 127.0.0.1 --port 8001
+```
+
+Có thể gộp bằng 1 script `start-services.ps1` / `start-services.sh` chạy cả 2 background.
 
 ## Cài đặt
 
@@ -221,20 +249,22 @@ Server mặc định `http://localhost:3000`.
 
 ## Biến môi trường
 
-| Biến                           | Ý nghĩa                                                        | Mặc định                |
-| ------------------------------ | -------------------------------------------------------------- | ----------------------- |
-| `PORT`                         | Port NestJS                                                    | `3000`                  |
-| `AI_PROVIDER`                  | Text2Cypher backend: `mock` \| `ngrok`                         | `mock`                  |
-| `AI_BASE_URL`                  | URL Ngrok/Cloudflare tunnel tới Colab                          | —                       |
-| `AI_TIMEOUT_MS`                | Timeout Text2Cypher (self-loop 3 vòng)                         | `180000`                |
-| `PIPELINE_BASE_URL`            | URL FastAPI microservice                                       | `http://127.0.0.1:8000` |
-| `PIPELINE_TIMEOUT_MS`          | Timeout Data Pipeline + GNN inference                          | `180000`                |
-| `PIPELINE_ANALYZE_SAMPLE_ROWS` | Số row Llama đọc để classify                                   | `200`                   |
-| `UPLOAD_DIR`                   | Thư mục CSV upload                                             | `uploads`               |
-| `UPLOAD_MAX_MB`                | Giới hạn CSV                                                   | `50`                    |
-| `BUILD_BATCH_SIZE`             | Số row / transaction khi UNWIND vào Neo4j                      | `1000`                  |
-| `FRAUD_THRESHOLD`              | Ngưỡng mặc định convert `fraud_score` → `is_fraud`             | `0.5`                   |
-| `GNN_VERSION`                  | Version string ghi vào `:DatasetMeta` (truy vết model)         | `v1.0`                  |
+| Biến                           | Ý nghĩa                                                                   | Mặc định                |
+| ------------------------------ | ------------------------------------------------------------------------- | ----------------------- |
+| `PORT`                         | Port NestJS                                                               | `3000`                  |
+| `AI_PROVIDER`                  | Text2Cypher backend: `mock` \| `ngrok`                                    | `mock`                  |
+| `AI_BASE_URL`                  | URL Ngrok/Cloudflare tunnel tới Colab (Text2Cypher)                       | —                       |
+| `AI_TIMEOUT_MS`                | Timeout Text2Cypher (self-loop 3 vòng)                                    | `180000`                |
+| `PIPELINE_BASE_URL`            | **Pipeline Service** (`pipeline.py`) — Llama classify                     | `http://127.0.0.1:8000` |
+| `PIPELINE_TIMEOUT_MS`          | Timeout Pipeline Service (classify 30-180s)                               | `180000`                |
+| `PIPELINE_ANALYZE_SAMPLE_ROWS` | Số row Llama đọc để classify                                              | `200`                   |
+| `GNN_BASE_URL`                 | **GNN Service** (`gnn_service.py`) — fraud inference                      | `http://127.0.0.1:8001` |
+| `GNN_TIMEOUT_MS`               | Timeout GNN Service (inference 5-60s, có thể kéo dài nếu graph lớn)       | `180000`                |
+| `GNN_VERSION`                  | Version string ghi vào `:DatasetMeta` (truy vết model)                    | `v1.0`                  |
+| `FRAUD_THRESHOLD`              | Ngưỡng mặc định convert `fraud_score` → `is_fraud`                        | `0.5`                   |
+| `UPLOAD_DIR`                   | Thư mục CSV upload                                                        | `uploads`               |
+| `UPLOAD_MAX_MB`                | Giới hạn CSV                                                              | `50`                    |
+| `BUILD_BATCH_SIZE`             | Số row / transaction khi UNWIND vào Neo4j                                 | `1000`                  |
 
 ---
 
@@ -439,21 +469,38 @@ System prompt của LLM phía Colab **cần biết** về property `fraud_score`
 { "status": "error", "message": "[Pipeline] Llama không phân loại được cột 'xxx'", "statusCode": 502 }
 ```
 
-Global exception filter bắt mọi lỗi (kể cả axios error từ FastAPI), gắn prefix `[Pipeline]` cho lỗi từ FastAPI và `[AI]` cho lỗi từ Ngrok để FE phân biệt nguồn.
+Ví dụ lỗi từ GNN Service:
+```json
+{ "status": "error", "message": "[GNN] Chưa load được weights — cần restart service :8001", "statusCode": 502 }
+```
+
+Ví dụ lỗi từ Ngrok Text2Cypher:
+```json
+{ "status": "error", "message": "[AI] Timeout sau 180s — kiểm tra Colab có còn chạy không", "statusCode": 504 }
+```
+
+Global exception filter bắt mọi lỗi, gắn prefix theo nguồn để FE phân biệt:
+- `[Pipeline]` — lỗi từ Pipeline Service `:8000`.
+- `[GNN]` — lỗi từ GNN Service `:8001`.
+- `[AI]` — lỗi từ Ngrok Text2Cypher.
 
 ---
 
 ## Contract NestJS ↔ FastAPI
 
-FastAPI bind `127.0.0.1:8000` (loopback only, không cần API key). Expose 4 endpoint:
+**2 service riêng biệt, mỗi service bind `127.0.0.1` loopback only, không cần API key.**
 
-### `GET /health`
+### Pipeline Service — `http://127.0.0.1:8000` (`pipeline.py`)
+
+Phụ trách luồng A (classify + prepare-build). Preload Llama ở `lifespan` startup.
+
+#### `GET /health`
 ```json
-{ "status": "ok", "models": { "llama": "loaded", "gnn": "loaded" } }
+{ "status": "ok", "service": "pipeline", "model": "llama", "loaded": true }
 ```
-NestJS ping khi startup + trước mỗi luồng để fail-fast nếu FastAPI chết.
+NestJS ping lúc startup + trước mỗi request `/api/data/classify` và `/api/data/build` để fail-fast.
 
-### `POST /classify-columns` (luồng A stage 2)
+#### `POST /classify-columns` (luồng A stage 2)
 ```json
 // Request
 { "fileName": "...", "filePath": "/abs/...", "sampleRows": 200 }
@@ -467,7 +514,7 @@ NestJS ping khi startup + trước mỗi luồng để fail-fast nếu FastAPI c
 }
 ```
 
-### `POST /prepare-build` (luồng A stage 3)
+#### `POST /prepare-build` (luồng A stage 3)
 ```json
 // Request
 { "fileName": "...", "filePath": "/abs/...", "classification": { /* ... */ } }
@@ -484,11 +531,23 @@ NestJS ping khi startup + trước mỗi luồng để fail-fast nếu FastAPI c
 }
 ```
 
-FastAPI **không đụng Neo4j** — chỉ sinh dữ liệu. NestJS tự UNWIND.
+Pipeline Service **không đụng Neo4j** — chỉ sinh dữ liệu. NestJS tự UNWIND.
 
-### `POST /predict-fraud` (luồng B)
+---
 
-NestJS export graph từ Neo4j thành JSON, gửi sang FastAPI. FastAPI tự tính graph features (degree, PageRank...) và chạy GNN.
+### GNN Service — `http://127.0.0.1:8001` (`gnn_service.py`)
+
+Phụ trách luồng B (fraud scoring). Preload GNN weights ở `lifespan` startup.
+
+#### `GET /health`
+```json
+{ "status": "ok", "service": "gnn", "model": "graphsage", "loaded": true, "version": "v1.0" }
+```
+NestJS ping lúc startup + trước mỗi request `/api/data/score`.
+
+#### `POST /predict-fraud` (luồng B)
+
+NestJS export graph từ Neo4j thành JSON, gửi sang GNN Service. GNN Service tự tính graph-structural features (degree, PageRank...) và chạy inference.
 
 ```json
 // Request
@@ -515,6 +574,8 @@ NestJS export graph từ Neo4j thành JSON, gửi sang FastAPI. FastAPI tự tí
 }
 ```
 
+GNN Service **không đụng Neo4j** — chỉ nhận graph JSON và trả score. Tránh credential sharing.
+
 ---
 
 ## Cấu trúc thư mục
@@ -524,7 +585,7 @@ src/
 ├── main.ts                    CORS + ValidationPipe + ExceptionFilter + bootstrap
 ├── app.module.ts              ConfigModule + wire tất cả module
 ├── common/
-│   └── http-exception.filter.ts   Global filter, prefix [Pipeline]/[AI] theo nguồn lỗi
+│   └── http-exception.filter.ts   Global filter, prefix [Pipeline]/[GNN]/[AI] theo nguồn lỗi
 ├── neo4j/                         Quản lý driver (chia sẻ cho A, B, C)
 │   ├── neo4j.service.ts           getReadSession() + getWriteSession()
 │   ├── neo4j.controller.ts
@@ -535,17 +596,19 @@ src/
 │   ├── data-pipeline.service.ts
 │   ├── graph-builder.service.ts        UNWIND batch + wipe + DatasetMeta + rollback
 │   ├── clients/
-│   │   └── fastapi.client.ts           HttpService wrapper, timeout 180s, health check
+│   │   └── pipeline.client.ts          Gọi Pipeline Service :8000 (health/classify/prepare-build)
 │   ├── storage/
 │   │   └── upload.storage.ts           Multer disk storage
 │   └── dto/
 │       ├── classify-request.dto.ts
 │       ├── build-request.dto.ts
 │       └── classification.types.ts
-├── fraud-scoring/                 LUỒNG B — GNN Scoring (tách module riêng)
+├── fraud-scoring/                 LUỒNG B — GNN Scoring (module riêng, port riêng)
 │   ├── fraud-scoring.module.ts
 │   ├── fraud-scoring.controller.ts     POST /api/data/score
-│   ├── fraud-scoring.service.ts        export graph → FastAPI → ghi lại Neo4j
+│   ├── fraud-scoring.service.ts        export graph Neo4j → GNN → ghi lại
+│   ├── clients/
+│   │   └── gnn.client.ts               Gọi GNN Service :8001 (health/predict-fraud)
 │   └── dto/score-request.dto.ts
 ├── ai/                            LLM Text2Cypher client
 │   ├── ai.interface.ts
@@ -558,43 +621,49 @@ src/
     └── dto/query.dto.ts
 ```
 
+**Lưu ý kiến trúc**: `data-pipeline/clients/pipeline.client.ts` và `fraud-scoring/clients/gnn.client.ts` là 2 HttpService wrapper hoàn toàn độc lập, **không chia sẻ code**. Mỗi cái có DI token riêng, config riêng (`PIPELINE_BASE_URL` vs `GNN_BASE_URL`), timeout riêng. Mục đích là để khi 1 service fail, phần còn lại vẫn hoạt động.
+
 `uploads/` ở root, **đã gitignore**.
 
 ---
 
 ## Điểm thiết kế
 
-- **3 luồng đồng cấp**: CSV→Graph (hạ tầng), GNN (lõi AI), Text2Cypher (UX). Mỗi luồng có module NestJS riêng, không dependency chéo giữa controller/service.
-- **Orchestrator pattern tuyệt đối**: NestJS không chứa logic AI. Llama + GNN ở FastAPI, LLM ở Colab. NestJS chỉ điều phối + persist.
+- **3 luồng đồng cấp**: CSV→Graph (hạ tầng), GNN (lõi AI), Text2Cypher (UX). Mỗi luồng có module NestJS riêng, không dependency chéo.
+- **Orchestrator pattern tuyệt đối**: NestJS không chứa logic AI. Llama ở Pipeline Service, GNN ở GNN Service, LLM ở Colab. NestJS chỉ điều phối + persist.
+- **Tách biệt 2 FastAPI service** (`:8000` Pipeline, `:8001` GNN): lifecycle độc lập, memory isolation, crash isolation, dễ migrate từng cái.
 - **Star/Hub graph model**: transaction-centric, chuẩn cho fraud detection (IEEE-CIS, Elliptic đều dùng).
 - **4-way column classification** (`id`/`related_col`/`feature`/`ignore`) với confidence + rationale để user quyết định tỉnh táo.
 - **UNWIND thay vì LOAD CSV**: không phụ thuộc `import/` folder của Neo4j, demo không vỡ vì filesystem config.
-- **GNN local trong FastAPI**: tránh Ngrok thứ 2, deterministic, dễ bảo vệ ("model chạy offline").
-- **FastAPI không biết Neo4j**: NestJS export graph dạng JSON đưa sang FastAPI. Tách biệt rõ orchestrator khỏi compute.
+- **GNN local trong GNN Service**: tránh Ngrok thứ 2, deterministic, dễ bảo vệ ("model chạy offline").
+- **Cả 2 FastAPI service không đụng Neo4j**: NestJS là client duy nhất. Tránh credential sharing, dễ swap implementation.
 - **Re-score được**: demo thử threshold khác nhau mà không rebuild graph.
 - **Build irreversible + confirm flag**: tránh xoá nhầm dữ liệu đã score.
 - **`:DatasetMeta` node**: single source of truth về graph hiện tại — luồng B và C đều đọc từ đây.
-- **Decoupling 2 AI provider**: `AI_PROVIDER` + `PIPELINE_BASE_URL` qua `.env`, không sửa code khi swap.
-- **Timeout 180s** cho mọi HTTP client gọi AI/ML.
-- **Loopback binding** cho FastAPI thay vì API key → demo đơn giản, đủ an toàn.
+- **Decoupling qua `.env`**: `AI_PROVIDER`, `PIPELINE_BASE_URL`, `GNN_BASE_URL` đều env-driven. Swap không cần sửa code.
+- **Timeout 180s** cho mọi HTTP client gọi AI/ML (Pipeline, GNN, Ngrok).
+- **Loopback binding** cho cả 2 FastAPI thay vì API key → demo đơn giản, đủ an toàn.
 - **Plan B mock**: nếu Ngrok chết giữa demo → `AI_PROVIDER=mock` → `MockAiService` trả Cypher sẵn cho ~10 câu demo.
-- **Response shape nhất quán**: global filter format mọi lỗi, có prefix nguồn (`[Pipeline]` / `[AI]`).
+- **Response shape nhất quán**: global filter format mọi lỗi, có prefix nguồn (`[Pipeline]` / `[GNN]` / `[AI]`).
 
 ---
 
 ## Checklist "sống còn" demo thesis
 
-1. **Timeout ≥ 180s** trên mọi HTTP client.
-2. **FE progress chi tiết** (SSE hoặc polling) cho `/classify`, `/build`, `/score`, `/graph/query` — mỗi cái có thể 1-3 phút.
-3. **Decoupling bằng `.env`**: không hardcode URL nào.
-4. **Confirm destructive action**: `/build` xoá graph cũ → UI phải confirm dialog.
-5. **Fallback chain**:
+1. **Khởi động đủ 3 tầng trước demo**: Neo4j → Pipeline Service `:8000` → GNN Service `:8001` → (Ngrok Colab) → NestJS → FE. Có script `start-services.ps1`/`.sh` để 1 lệnh khởi động cả Python lẫn Node.
+2. **Timeout ≥ 180s** trên mọi HTTP client (Pipeline, GNN, Ngrok).
+3. **Health check kép ở startup NestJS**: ping cả `:8000/health` và `:8001/health`, log warning nếu 1 trong 2 off — không chặn server start, chỉ cảnh báo.
+4. **FE progress chi tiết** (SSE hoặc polling) cho `/classify`, `/build`, `/score`, `/graph/query` — mỗi cái có thể 1-3 phút.
+5. **Decoupling bằng `.env`**: không hardcode URL nào.
+6. **Confirm destructive action**: `/build` xoá graph cũ → UI phải confirm dialog.
+7. **Fallback chain**:
    - Ngrok chết → `AI_PROVIDER=mock`.
-   - FastAPI chết → hiển thị error rõ ràng "Cần khởi động pipeline Python" + health endpoint để FE check.
-   - Neo4j chết → reject ở connection layer, không đi xa hơn.
-6. **Ngrok skip-browser-warning header**: dễ quên, test ngay khi cắm Ngrok thật lần đầu.
-7. **Keep-alive Colab**: cell JS click trong notebook, reconnect 15 phút trước demo.
-8. **Chuẩn bị 10 câu Cypher cho Mock**: phòng trường hợp Ngrok chết giữa bảo vệ.
+   - Pipeline Service chết → endpoint `/api/data/classify` và `/api/data/build` trả `502` rõ ràng "Cần khởi động Pipeline Service ở :8000".
+   - GNN Service chết → endpoint `/api/data/score` trả `502` rõ ràng "Cần khởi động GNN Service ở :8001". Luồng A và C vẫn hoạt động.
+   - Neo4j chết → reject ở connection layer.
+8. **Ngrok skip-browser-warning header**: dễ quên, test ngay khi cắm Ngrok thật lần đầu.
+9. **Keep-alive Colab**: cell JS click trong notebook, reconnect 15 phút trước demo.
+10. **Chuẩn bị 10 câu Cypher cho Mock**: phòng trường hợp Ngrok chết giữa bảo vệ.
 
 ---
 
@@ -606,35 +675,36 @@ src/
 2. `GET /neo4j/status` → `connected: true`.
 3. `GET /api/data/dataset` → `dataset: null`.
 
-### Luồng A — Data Pipeline
+### Luồng A — Data Pipeline (cần Pipeline Service `:8000` chạy)
 
 4. `POST /api/data/upload` CSV hợp lệ → `fileName`, `rowCount`, `columns`.
 5. `POST /api/data/upload` file `.txt` → `400`.
 6. `POST /api/data/classify` → chờ 30-180s → `columns` có `suggested`, `confidence`, `rationale`.
-7. `POST /api/data/classify` khi FastAPI off → `502` với message Python.
+7. `POST /api/data/classify` khi Pipeline Service off → `502` với prefix `[Pipeline]`.
 8. `POST /api/data/build` thiếu `confirm` → `400`.
 9. `POST /api/data/build` không có `related_col` → `422`.
 10. `POST /api/data/build` id không unique → `400`.
 11. `POST /api/data/build` đầy đủ → `transactionsCreated > 0`, `edgesCreated > 0`.
 12. `GET /api/data/dataset` → trả metadata bước 11.
 
-### Luồng B — GNN Scoring
+### Luồng B — GNN Scoring (cần GNN Service `:8001` chạy)
 
 13. `POST /api/data/score` khi chưa build → `409`.
-14. `POST /api/data/score` sau bước 11 → chờ 5-30s → `scoredCount = transactionsCreated`, `fraudCount > 0`.
-15. `POST /api/data/score` với `threshold: 0.9` → `fraudCount` nhỏ hơn bước 14.
-16. `GET /api/data/dataset` → `scoredAt`, `fraudThreshold`, `gnnVersion` đã set.
+14. `POST /api/data/score` khi GNN Service off (Pipeline vẫn on) → `502` với prefix `[GNN]`. Chứng minh isolation: luồng A vẫn hoạt động.
+15. `POST /api/data/score` sau bước 11 → chờ 5-30s → `scoredCount = transactionsCreated`, `fraudCount > 0`.
+16. `POST /api/data/score` với `threshold: 0.9` → `fraudCount` nhỏ hơn bước 15.
+17. `GET /api/data/dataset` → `scoredAt`, `fraudThreshold`, `gnnVersion` đã set.
 
 ### Luồng C — Text2Cypher
 
-17. `POST /graph/query` với `{"prompt": "liệt kê fraud"}` → LLM nên sinh Cypher filter `is_fraud = true`.
-18. `POST /graph/query` với `{"prompt": "đếm giao dịch"}` → `scalars: [{ count: 12345 }]`.
-19. `POST /graph/query` body trống → `400`.
-20. `POST /graph/query` khi chưa connect Neo4j → `400` với message "Vui lòng kết nối Database trước!".
+18. `POST /graph/query` với `{"prompt": "liệt kê fraud"}` → LLM nên sinh Cypher filter `is_fraud = true`.
+19. `POST /graph/query` với `{"prompt": "đếm giao dịch"}` → `scalars: [{ count: 12345 }]`.
+20. `POST /graph/query` body trống → `400`.
+21. `POST /graph/query` khi chưa connect Neo4j → `400` với message "Vui lòng kết nối Database trước!".
 
 ### Teardown
 
-21. `POST /neo4j/disconnect` → driver đóng.
+22. `POST /neo4j/disconnect` → driver đóng.
 
 ---
 
@@ -646,14 +716,18 @@ src/
 - [x] Global exception filter + CORS + DTO validation
 - [ ] **Module DataPipeline (luồng A) — đang chờ review README**
   - [ ] `POST /api/data/upload` + Multer + parse header
-  - [ ] `POST /api/data/classify` + FastAPI client + health check
+  - [ ] `pipeline.client.ts` gọi Pipeline Service `:8000` + health check
+  - [ ] `POST /api/data/classify`
   - [ ] `POST /api/data/build` + GraphBuilderService (UNWIND + wipe + rollback)
   - [ ] `GET /api/data/dataset` đọc `:DatasetMeta`
 - [ ] **Module FraudScoring (luồng B)**
-  - [ ] `POST /api/data/score` export graph → FastAPI → ghi lại
-  - [ ] Cập nhật `:DatasetMeta` với scored_at / threshold / gnnVersion
+  - [ ] `gnn.client.ts` gọi GNN Service `:8001` + health check
+  - [ ] `POST /api/data/score` export graph Neo4j → GNN → ghi lại
+  - [ ] Cập nhật `:DatasetMeta` với scoredAt / fraudThreshold / gnnVersion / fraudCount / avgScore
 - [ ] Thêm header `ngrok-skip-browser-warning` vào `NgrokAiService`
+- [ ] Health check kép lúc startup NestJS (ping `:8000` và `:8001`, warning nếu off)
 - [ ] SSE progress cho 3 endpoint chậm (classify, build, score)
 - [ ] Chuẩn bị Mock Cypher cho 10 câu demo (backup Plan B)
+- [ ] Script `start-services.ps1` / `.sh` khởi động Pipeline + GNN + NestJS 1 lệnh
 - [ ] FE tích hợp (xem `FRONTEND_KICKOFF.md`)
 - [ ] Unit + E2E test
