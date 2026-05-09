@@ -1,0 +1,11 @@
+transaction_id,timestamp,amount,currency,from,destination,job,transaction_type,status,source_bank,destination_bank,device_type,country,is_fraud
+3c188522-892,2026-05-01T08:00:00,3215.16,VND,user_1000@mail.com,user_2000@mail.com,Software Engineer,withdrawal,completed,ACB,Techcombank,mobile,Vietnam,0
+41fc9f02-968,2026-05-01T11:00:00,3695.53,VND,user_1001@mail.com,user_2001@mail.com,Teacher,withdrawal,failed,MB Bank,Vietcombank,tablet,Vietnam,1
+a4929d20-ba8,2026-05-01T14:00:00,207.32,VND,user_1002@mail.com,user_2002@mail.com,Doctor,transfer,completed,Techcombank,MB Bank,tablet,Vietnam,0
+6e75895b-de1,2026-05-01T17:00:00,2828.16,VND,user_1003@mail.com,user_2003@mail.com,Data Analyst,withdrawal,failed,MB Bank,BIDV,mobile,Vietnam,1
+360c8e55-54b,2026-05-01T20:00:00,2966.87,VND,user_1004@mail.com,user_2004@mail.com,Marketing Manager,transfer,completed,BIDV,ACB,desktop,Vietnam,0
+3391012e-a63,2026-05-01T23:00:00,1115.8,VND,user_1005@mail.com,user_2005@mail.com,Freelancer,transfer,pending,Vietcombank,BIDV,mobile,Vietnam,0
+0c421891-f53,2026-05-02T02:00:00,4245.1,VND,user_1006@mail.com,user_2006@mail.com,Accountant,payment,failed,Vietcombank,BIDV,tablet,Vietnam,0
+51429902-1d5,2026-05-02T05:00:00,4866.92,VND,user_1007@mail.com,user_2007@mail.com,Designer,transfer,pending,MB Bank,ACB,tablet,Vietnam,0
+e667cb7a-f04,2026-05-02T08:00:00,2907.89,VND,user_1008@mail.com,user_2008@mail.com,Sales Executive,transfer,failed,Vietcombank,Techcombank,desktop,Vietnam,0
+eb995637-3a1,2026-05-02T11:00:00,4283.82,VND,user_1009@mail.com,user_2009@mail.com,Consultant,payment,completed,ACB,BIDV,tablet,Vietnam,0

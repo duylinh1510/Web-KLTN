@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, Matches } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, Matches } from 'class-validator';
 
 export class ConnectNeo4jDto {
   @Matches(/^(bolt|neo4j)(\+s|\+ssc)?:\/\/.+/, {
@@ -13,4 +13,8 @@ export class ConnectNeo4jDto {
   @IsString()
   @IsNotEmpty()
   password!: string;
+
+  @IsString()
+  @IsOptional()
+  dbId?: string;
 }

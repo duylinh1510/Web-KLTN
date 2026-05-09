@@ -28,6 +28,7 @@ export type ConnectNeo4jRequest = {
   uri: string;
   user: string;
   password: string;
+  dbId?: string;
 };
 
 export type ConnectNeo4jResponse = ApiSuccess<{ message: string }>;
@@ -36,6 +37,7 @@ export type DisconnectNeo4jResponse = ApiSuccess<{ message: string }>;
 export type Neo4jStatusResponse = ApiSuccess<{
   connected: boolean;
   uri: string | null;
+  dbId: string | null;
 }>;
 
 // ============================================================
@@ -66,10 +68,17 @@ export type QueryRequest = {
   prompt: string;
 };
 
+export type QueryMetadata = {
+  retries: number;
+  cypherV1?: string;
+  cypherV2?: string;
+};
+
 export type QueryResponse = ApiSuccess<{
   generatedCypher: string;
   graphData: GraphData;
   scalars: Scalar[];
+  metadata?: QueryMetadata;
 }>;
 
 // ============================================================
@@ -90,6 +99,65 @@ export const QueryStage = {
 export type QueryStage = (typeof QueryStage)[keyof typeof QueryStage];
 
 // ============================================================
+// CSV2Graph endpoints
+// ============================================================
+
+export type DatasetInfoResponse = ApiSuccess<{
+  hasData: boolean;
+  nodeLabel?: string;
+  columns?: string[];
+  targetLabel?: string;
+  numNodes?: number;
+  jobId?: string;
+}>;
+
+export type Csv2GraphFullSchema = {
+  node_id: string;
+  relation_cols: string[];
+  feature_cols: string[];
+  encoded_feature_cols: string[];
+  target_label: string;
+  train_ratio: number;
+  val_ratio: number;
+  seed: number;
+  max_group_size: number;
+};
+
+export type Csv2GraphStats = {
+  inputRows: number;
+  numNodes: number;
+  numEdges: number;
+  numFeatures: number;
+  numEncodedFeatures: number;
+  numRelationTypes: number;
+  ingested?: { nodes: number; relationships: number };
+};
+
+export type Csv2GraphFiles = {
+  inputCsv: string;
+  nodesCsv: string;
+  edgesCsv: string;
+  schemaJson: string;
+  preprocessedCsv?: string;
+  dataPt?: string;
+};
+
+export type Csv2GraphRunResponse = ApiSuccess<{
+  jobId: string;
+  mode: "full" | "append";
+  canonicalJobId?: string;
+  schema: Csv2GraphFullSchema;
+  stats: Csv2GraphStats;
+  files: Csv2GraphFiles;
+}>;
+
+export type GraphPreviewResponse = ApiSuccess<{
+  nodeLabel: string;
+  graphData: GraphData;
+  scalars: Scalar[];
+}>;
+
+// ============================================================
 // History (persist qua F5)
 // ============================================================
 
@@ -101,4 +169,5 @@ export type HistoryEntry = {
   graphData?: GraphData;
   scalars?: Scalar[];
   error?: string;
+  metadata?: QueryMetadata;
 };

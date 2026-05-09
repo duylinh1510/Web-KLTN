@@ -16,7 +16,7 @@ export type GraphLink = {
 export type GraphData = {
   nodes: GraphNode[];
   links: GraphLink[];
-  scalars: any[];
+  scalars: Record<string, any>[];
 };
 
 function toPlain(value: any): any {
@@ -34,38 +34,41 @@ function toPlain(value: any): any {
 }
 
 function nodeToGraph(n: Node): GraphNode {
-    return {
-      id: n.identity.toString(),
-      label: n.labels[0] ?? 'Node',
-      properties: toPlain(n.properties),
-    };
-  }
+  return {
+    id: n.identity.toString(),
+    label: n.labels[0] ?? 'Node',
+    properties: toPlain(n.properties),
+  };
+}
 
-  function relToGraph(r: Relationship): GraphLink {
-    return {
-      source: r.start.toString(),
-      target: r.end.toString(),
-      type: r.type,
-      properties: toPlain(r.properties),
-    };
-  }
+function relToGraph(r: Relationship): GraphLink {
+  return {
+    source: r.start.toString(),
+    target: r.end.toString(),
+    type: r.type,
+    properties: toPlain(r.properties),
+  };
+}
 
-function collect(
+// Xử 1 value: nếu là graph type (Node/Rel/Path) thì đẩy vào maps;
+// nếu là scalar pure thì return plain value; mixed array xử từng item.
+function extractGraphOrScalar(
   value: any,
   nodesMap: Map<string, GraphNode>,
   links: GraphLink[],
-  scalars: any[],
-): void {
-  if (value === null || value === undefined) return;
+): { isGraph: boolean; scalarValue?: any } {
+  if (value === null || value === undefined) {
+    return { isGraph: false, scalarValue: value };
+  }
 
   if (value instanceof Node) {
     nodesMap.set(value.identity.toString(), nodeToGraph(value));
-    return;
+    return { isGraph: true };
   }
 
   if (value instanceof Relationship) {
     links.push(relToGraph(value));
-    return;
+    return { isGraph: true };
   }
 
   if (value instanceof Path) {
@@ -74,25 +77,45 @@ function collect(
       nodesMap.set(seg.end.identity.toString(), nodeToGraph(seg.end));
       links.push(relToGraph(seg.relationship));
     }
-    return;
+    return { isGraph: true };
   }
 
   if (Array.isArray(value)) {
-    for (const item of value) collect(item, nodesMap, links, scalars);
-    return;
+    let hasGraph = false;
+    const plainItems: any[] = [];
+    for (const item of value) {
+      const res = extractGraphOrScalar(item, nodesMap, links);
+      if (res.isGraph) hasGraph = true;
+      else plainItems.push(res.scalarValue);
+    }
+    if (hasGraph && plainItems.length === 0) return { isGraph: true };
+    if (!hasGraph) return { isGraph: false, scalarValue: plainItems };
+    // Mixed: ưu tiên treat as graph, ignore plain items trong mảng đó
+    return { isGraph: true };
   }
 
-  scalars.push(toPlain(value));
+  // Scalar pure (string/number/bool/object literal)
+  return { isGraph: false, scalarValue: toPlain(value) };
 }
 
 export function formatRecords(records: any[]): GraphData {
   const nodesMap = new Map<string, GraphNode>();
   const links: GraphLink[] = [];
-  const scalars: any[] = [];
+  const scalars: Record<string, any>[] = [];
 
   for (const record of records) {
+    const recordScalars: Record<string, any> = {};
+
     for (const key of record.keys) {
-      collect(record.get(key), nodesMap, links, scalars);
+      const value = record.get(key);
+      const res = extractGraphOrScalar(value, nodesMap, links);
+      if (!res.isGraph && res.scalarValue !== undefined) {
+        recordScalars[key] = res.scalarValue;
+      }
+    }
+
+    if (Object.keys(recordScalars).length > 0) {
+      scalars.push(recordScalars);
     }
   }
 

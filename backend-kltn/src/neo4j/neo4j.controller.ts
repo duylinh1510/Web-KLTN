@@ -16,8 +16,8 @@ export class Neo4jController {
   @Post('connect')
   @HttpCode(HttpStatus.OK)
   async connect(@Body() dto: ConnectNeo4jDto) {
-    await this.neo4jService.connect(dto.uri, dto.user, dto.password);
-    return { status: 'success', message: `Đã kết nối tới ${dto.uri}` };
+    await this.neo4jService.connect(dto.uri, dto.user, dto.password, dto.dbId);
+    return { status: 'success', message: `Đã kết nối tới ${dto.uri}${dto.dbId ? ` (dbId: ${dto.dbId})` : ''}` };
   }
 
   @Post('disconnect')

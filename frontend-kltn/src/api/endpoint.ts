@@ -6,6 +6,9 @@ import type {
   Neo4jStatusResponse,
   QueryRequest,
   QueryResponse,
+  DatasetInfoResponse,
+  Csv2GraphRunResponse,
+  GraphPreviewResponse,
 } from "../types";
 
 /**
@@ -53,6 +56,50 @@ export async function queryGraph(
   const res = await apiClient.post<QueryResponse>("/graph/query", body, {
     signal,
   });
+  return res.data;
+}
+
+/**
+ * GET /csv2graph/dataset-info
+ * Cho FE biết DB hiện tại đã có data chưa + canonical columns.
+ * Yêu cầu connect Neo4j (BE trả 400 nếu chưa).
+ */
+export async function getDatasetInfo(): Promise<DatasetInfoResponse> {
+  const res = await apiClient.get<DatasetInfoResponse>("/csv2graph/dataset-info");
+  return res.data;
+}
+
+/**
+ * POST /csv2graph/run (multipart)
+ * BE auto-detect mode:
+ *   - DB rỗng → full build (LLM classify, ghi data.pt).
+ *   - DB đã có data → append (skip LLM, MERGE upsert).
+ *
+ * Truyền AbortSignal để cho phép user cancel; build có thể tốn vài phút.
+ */
+export async function runCsv2Graph(
+  formData: FormData,
+  signal?: AbortSignal,
+): Promise<Csv2GraphRunResponse> {
+  const res = await apiClient.post<Csv2GraphRunResponse>(
+    "/csv2graph/run",
+    formData,
+    {
+      signal,
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 600_000,
+    },
+  );
+  return res.data;
+}
+
+/**
+ * GET /graph/preview
+ * Auto-render 10 transaction đầu + neighbors. BE trả 400 nếu DB rỗng
+ * hoặc chưa có metadata (caller dùng `enabled: hasData` để tránh).
+ */
+export async function getGraphPreview(): Promise<GraphPreviewResponse> {
+  const res = await apiClient.get<GraphPreviewResponse>("/graph/preview");
   return res.data;
 }
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { QueryStage, type GraphData, type Scalar } from "../types";
+import { QueryStage, type GraphData, type Scalar, type QueryMetadata } from "../types";
 
 type QueryState = {
   stage: (typeof QueryStage)[keyof typeof QueryStage];
@@ -7,20 +7,23 @@ type QueryState = {
   cypher: string | null;
   graphData: GraphData | null;
   scalars: Scalar[];
+  metadata: QueryMetadata | null;
   errorMessages: string[];
   controller: AbortController | null;
   activeHistoryId: string | null;
 };
 
 type QueryActions = {
-  startQuery: (prompt: string, historyId: string) => AbortController;
+  startQuery: (prompt: string) => AbortController;
   setStage: (stage: QueryState["stage"]) => void;
   finishSuccess: (payload: {
     cypher: string;
     graphData: GraphData;
     scalars: Scalar[];
+    metadata?: QueryMetadata | null;
+    historyId?: string;
   }) => void;
-  finishError: (messages: string[]) => void;
+  finishError: (messages: string[], historyId?: string) => void;
   cancel: () => void;
   resetToHistory: (payload: {
     prompt: string;
@@ -38,6 +41,7 @@ const initialState: QueryState = {
   cypher: null,
   graphData: null,
   scalars: [],
+  metadata: null,
   errorMessages: [],
   controller: null,
   activeHistoryId: null,
@@ -47,34 +51,37 @@ export const useQueryStore = create<QueryState & QueryActions>()(
   (set, get) => ({
     ...initialState,
 
-    startQuery: (prompt, historyId) => {
+    startQuery: (prompt) => {
       const controller = new AbortController();
       set({
         ...initialState,
         prompt,
         stage: QueryStage.SENDING,
         controller,
-        activeHistoryId: historyId,
+        activeHistoryId: null,
       });
       return controller;
     },
 
     setStage: (stage) => set({ stage }),
 
-    finishSuccess: ({ cypher, graphData, scalars }) =>
+    finishSuccess: ({ cypher, graphData, scalars, metadata, historyId }) =>
       set({
         stage: QueryStage.DONE,
         cypher,
         graphData,
         scalars,
+        metadata: metadata ?? null,
         controller: null,
+        activeHistoryId: historyId ?? null,
       }),
 
-    finishError: (messages) =>
+    finishError: (messages, historyId) =>
       set({
         stage: QueryStage.ERROR,
         errorMessages: messages,
         controller: null,
+        activeHistoryId: historyId ?? null,
       }),
 
     cancel: () => {

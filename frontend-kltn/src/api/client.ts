@@ -1,5 +1,7 @@
 import axios, { AxiosError, type AxiosInstance } from "axios";
 import type { ApiError, NormalizedApiError } from "../types";
+import { useConnectionStore } from "../store/connectionStore";
+import { useDatasetStore } from "../store/datasetStore";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 
@@ -56,6 +58,19 @@ export function isAppApiError(e: unknown): e is AppApiError {
   return e instanceof AppApiError;
 }
 
+const DB_NOT_CONNECTED_MESSAGE = "Vui lòng kết nối Database trước!";
+function buildAppError(messages: string[], statusCode: number): AppApiError {
+  // Side effect: BE báo chưa connect → reset cả 2 store để FE sync.
+  // Đồng nghĩa: BE đã mất driver (restart, disconnect ngoài ý muốn...).
+  // Reset connectionStore → kéo theo isConnected=false → useDataset*
+  // hook auto-disable (enabled=false) → tránh refetch lỗi liên tục.
+  if (messages.includes(DB_NOT_CONNECTED_MESSAGE)) {
+    useConnectionStore.getState().reset();
+    useDatasetStore.getState().reset();
+  }
+  return new AppApiError(messages, statusCode);
+}
+
 // ==============================================================
 // Response interceptor
 // ==============================================================
@@ -64,7 +79,7 @@ apiClient.interceptors.response.use(
   (response) => {
     const data = response.data;
     if (isApiErrorPayload(data)) {
-      throw new AppApiError(
+      throw buildAppError(
         toMessages(data.message),
         data.statusCode ?? response.status,
       );
@@ -75,11 +90,10 @@ apiClient.interceptors.response.use(
     if (axios.isCancel(error) || error.code === "ERR_CANCELED") {
       return Promise.reject(error);
     }
-
     if (!error.response) {
       const isTimeout = error.code === "ECONNABORTED";
       return Promise.reject(
-        new AppApiError(
+        buildAppError(
           [
             isTimeout
               ? "Request quá 200s, có thể AI đang self-correct. Thử lại hoặc kiểm tra BE."
@@ -89,19 +103,17 @@ apiClient.interceptors.response.use(
         ),
       );
     }
-
     const data = error.response.data;
     if (isApiErrorPayload(data)) {
       return Promise.reject(
-        new AppApiError(
+        buildAppError(
           toMessages(data.message),
           data.statusCode ?? error.response.status,
         ),
       );
     }
-
     return Promise.reject(
-      new AppApiError(
+      buildAppError(
         [error.message || "Lỗi không xác định"],
         error.response.status,
       ),

@@ -1,0 +1,8 @@
+Node properties:
+- node_id {node_id: STRING NOT NULL Example: "3c188522-892", country: STRING NOT NULL Example: "Vietnam", amount: STRING NOT NULL Example: "3215.16", is_fraud: STRING NOT NULL Example: "0", currency: STRING NOT NULL Example: "VND", job: STRING NOT NULL, timestamp: STRING NOT NULL, status: STRING NOT NULL Example: "completed"}
+
+Relationship properties:
+- SAME_RELATION {type: STRING NOT NULL}
+
+Relationship structure:
+- (node_id)-[:SAME_RELATION]->(node_id)

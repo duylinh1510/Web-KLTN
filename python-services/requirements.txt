@@ -1,0 +1,17 @@
+# === GNN Service (port 8001) ===
+torch>=2.0.0
+torch-geometric>=2.5.0      # PyG — GNN framework (F-GNN, GraphSAGE, GAT, GCN)
+# torch-scatter, torch-sparse — cài riêng theo hướng dẫn PyG nếu cần
+
+# === Pipeline Service (port 8000) ===
+# llama-cpp-python>=0.2.0   # Uncomment nếu dùng Llama local (cần CMake + C++ compiler)
+# transformers>=4.40.0      # Uncomment nếu dùng HuggingFace Transformers
+
+# === Shared ===
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.5.0         # StandardScaler, metrics
+networkx>=3.3               # Graph-structural features (degree, PageRank, clustering)
+pydantic>=2.7.0

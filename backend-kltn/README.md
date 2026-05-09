@@ -1,733 +1,483 @@
 # Back-end KLTN — Fraud Detection Graph Platform
 
-Back-end NestJS đóng vai trò **Orchestrator** (điều phối viên) cho nền tảng phát hiện gian lận trên đồ thị. Hệ thống có **3 luồng nghiệp vụ đồng cấp**, mỗi luồng là một đóng góp độc lập:
+Back-end NestJS đóng vai trò **Orchestrator** cho nền tảng phát hiện gian lận trên đồ thị. Hệ thống có **3 luồng nghiệp vụ**:
 
-1. **Luồng A — CSV → Graph (Data Pipeline):** biến file giao dịch thô thành đồ thị Neo4j theo mô hình star/hub, LLM phân loại cột.
-2. **Luồng B — GNN Fraud Scoring:** chạy mô hình GNN trên đồ thị để gán nhãn / score fraud cho từng transaction.
-3. **Luồng C — Text2Cypher (Natural Language Query):** truy vấn đồ thị (có cả nhãn fraud) bằng câu hỏi tiếng Việt.
+| Luồng | Tên | Trạng thái | Module |
+| --- | --- | --- | --- |
+| **A** | CSV → Graph (data pipeline + build data.pt) | ✅ Đã xong | `src/csv2graph/` |
+| **B** | GNN Fraud Scoring | 🚧 **Chưa implement** | (chưa có) |
+| **C** | Text2Cypher (NL query) | ✅ Đã xong | `src/text2cypher/` + `src/graph/` |
 
-Luồng A dựng hạ tầng, luồng B là lõi AI, luồng C là trải nghiệm người dùng. Thiếu một trong 3 là demo mất giá trị — vì vậy tất cả đều quan trọng như nhau.
-
-NestJS không tự suy luận AI. Mọi suy luận được delegate cho FastAPI (luồng A + B) hoặc Ngrok/Colab (luồng C). NestJS chỉ điều phối: nhận request FE → forward tới đúng AI service → persist Neo4j → format kết quả → trả FE.
+NestJS không tự suy luận AI. Mọi suy luận được delegate ra ngoài (Colab + ngrok cho LLM, Python sidecar local cho PyTorch). NestJS điều phối: nhận request FE → forward đúng AI service → persist Neo4j → format kết quả → trả FE.
 
 ---
 
-## Kiến trúc hệ thống
-
-Hệ thống có **2 FastAPI microservice độc lập** chạy local, mỗi service bọc 1 file Python:
+## 1. Kiến trúc tổng quan
 
 ```
-                             ┌──── [FastAPI :8000 — Pipeline Service]  (pipeline.py → Llama classify cột)
-                             │
-                             ├──── [FastAPI :8001 — GNN Service]       (gnn_service.py → predict fraud)
-                             │
- [React FE] ──HTTP──▶ [NestJS BE — Orchestrator]
-                             │
-                             ├──── [Colab + Ngrok]   (Text2Cypher: NL → Cypher)
-                             │
-                             ├──── [Neo4j Local]     (Bolt, READ + WRITE)
-                             │
-                             └──── [uploads/]        (File system — CSV user upload)
+                   ┌────── [Colab + ngrok]      Llama-3.2-3B (CSV2Graph /classify-schema)
+                   │
+                   ├────── [Colab + ngrok]      Qwen2 + LoRA (Text2Cypher /generate + /correct)
+                   │
+[React FE] ── HTTP ─▶ [NestJS Orchestrator :3000]
+                   │
+                   ├────── [Python sidecar 127.0.0.1:8001]   csvtograph_sidecar.py — build data.pt
+                   │
+                   └────── [Neo4j local]        bolt://localhost:7687
 ```
 
 **Phân vai:**
 
-| Thành phần                    | Vai trò                                                                                                     |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| React FE                      | Giao diện. Không gọi AI service trực tiếp.                                                                  |
-| **NestJS BE**                 | Orchestrator: nhận request, điều phối AI service, quản lý Neo4j driver, chuẩn hoá response.                 |
-| **Pipeline Service** `:8000`  | Bọc `pipeline.py` (Llama phân loại cột + chuẩn hoá CSV). Bind loopback only, không đụng Neo4j.              |
-| **GNN Service** `:8001`       | Bọc `gnn_service.py` (load GNN weights + inference fraud score). Bind loopback only, không đụng Neo4j.      |
-| Colab + Ngrok                 | Chạy LLM Text2Cypher (cần GPU). Tunnel Ngrok để NestJS gọi được.                                             |
-| Neo4j Local                   | Lưu graph. NestJS là client duy nhất; 2 FastAPI service không connect Neo4j.                                 |
-| `uploads/`                    | CSV user upload. NestJS ghi, Pipeline Service đọc qua `filePath` tuyệt đối (cùng máy).                      |
+| Thành phần | Vai trò |
+| --- | --- |
+| React FE | Giao diện, không gọi AI service trực tiếp. |
+| NestJS BE `:3000` | Orchestrator: file I/O, gọi LLM/sidecar, ingest Neo4j, chuẩn hoá response. |
+| Colab CSV2Graph | Llama-3.2-3B classify-schema. JSON only (không truyền file). |
+| Colab Text2Cypher | Qwen2 + LoRA. `/generate` + `/correct` — JSON only. |
+| Python sidecar `:8001` | `csvtograph_sidecar.py` — đọc CSV local + build PyG `data.pt`. Bind loopback. |
+| Neo4j local | Lưu graph. NestJS là client duy nhất. |
 
-**Tại sao tách 2 service?**
-
-- **Không đụng code Python đang có**: mỗi file `.py` tự wrap FastAPI standalone.
-- **Lifecycle độc lập**: retrain GNN → restart `:8001`, không ảnh hưởng Pipeline `:8000`.
-- **Memory isolation**: Llama và GNN load trong 2 process tách, tránh OOM khi model lớn.
-- **Crash isolation**: 1 service chết không kéo cái kia chết theo.
-- **Dễ migrate sang Colab**: nếu về sau GNN model quá lớn, chỉ đổi `GNN_BASE_URL` sang Ngrok URL, NestJS không sửa code.
+**Tại sao tách:**
+- Colab: cần GPU cho LLM, dùng ngrok tunnel; truyền JSON (vài KB) thay vì file.
+- Python sidecar local: PyTorch + PyG cần cài Python, không nhúng vào NestJS; bind `127.0.0.1` đủ an toàn.
 
 ---
 
-# LUỒNG A — CSV → Graph (Data Pipeline)
-
-## 1. Mô hình đồ thị (Star / Hub)
-
-Mỗi dòng trong CSV = **1 node `:Transaction`**. Các transaction liên kết **gián tiếp** qua các **hub node** đại diện cho giá trị chung (cùng card, cùng IP, cùng device…).
-
-Mỗi cột CSV được phân thành 1 trong 4 loại:
-
-| Loại          | Ý nghĩa                                                                 | Xử lý khi build graph                                                 |
-| ------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `id`          | Khóa chính (unique per row). Tối đa 1 cột.                              | Primary key của `:Transaction`.                                       |
-| `related_col` | Cột quan hệ — giá trị giống nhau ⇒ liên kết (card, IP, device, email).  | Mỗi giá trị unique → 1 hub node `:<HubLabel>`. Transaction → edge `:HAS_<COL>` tới hub. |
-| `feature`     | Cột đặc trưng — độ đo, đơn vị tính (amount, duration, distance).        | Lưu thành property của `:Transaction`. **GNN sẽ dùng làm input feature.** |
-| `ignore`      | Cột user không muốn đưa vào đồ thị.                                      | Bỏ qua.                                                               |
-
-### Ví dụ minh họa
-
-CSV đầu vào:
-
-| tx_id | card_number | ip        | amount | timestamp  |
-| ----- | ----------- | --------- | ------ | ---------- |
-| T1    | 1111        | 10.0.0.1  | 500    | 1713000000 |
-| T2    | 1111        | 10.0.0.2  | 1200   | 1713000100 |
-| T3    | 2222        | 10.0.0.1  | 300    | 1713000200 |
-
-Phân loại (user confirm):
-
-- `tx_id` → **id**
-- `card_number`, `ip` → **related_col** (hub labels: `Card`, `IP`)
-- `amount`, `timestamp` → **feature**
-
-Đồ thị sinh ra:
-
-```
-        (:Card {value:"1111"})             (:IP {value:"10.0.0.1"})
-           /            \                      /            \
-    (:Transaction T1)  (:Transaction T2)    (:Transaction T1)  (:Transaction T3)
-
-        (:Card {value:"2222"})             (:IP {value:"10.0.0.2"})
-             |                                    |
-    (:Transaction T3)                    (:Transaction T2)
-```
-
-T1 và T2 "liên quan" vì cùng card 1111. T1 và T3 "liên quan" vì cùng IP. GNN sau này sẽ học được pattern kiểu *"transaction chung card với một fraud → dễ là fraud"*.
-
-## 2. Ba giai đoạn API
-
-- **Stage 1** — `POST /api/data/upload`: nhận CSV, lưu `uploads/`, parse header + rowCount.
-- **Stage 2** — `POST /api/data/classify`: NestJS forward sang FastAPI → Llama đọc sample 200 rows → trả phân loại gợi ý + confidence + rationale. User chỉnh sửa trên UI.
-- **Stage 3** — `POST /api/data/build`: NestJS forward classification đã confirm sang FastAPI → FastAPI chuẩn hoá thành JSON batch → NestJS UNWIND vào Neo4j.
-
-## 3. "Bút sa gà chết" — Build là irreversible
-
-Một khi graph đã build, **không thể sửa phân loại**. Muốn đổi → upload + build lại từ đầu.
-
-- `/api/data/build` **xoá sạch graph hiện tại** (Transaction + hub + DatasetMeta) trước khi dựng mới.
-- Bắt buộc `confirm: true` trong body; BE từ chối nếu thiếu.
-- Một Neo4j database chứa tối đa 1 dataset tại 1 thời điểm (giảm complexity cho thesis demo).
-
----
-
-# LUỒNG B — GNN Fraud Scoring
-
-## 1. Vai trò
-
-Sau khi graph đã dựng (luồng A), luồng B chạy mô hình GNN để gán cho mỗi `:Transaction`:
-
-- `fraud_score`: float ∈ `[0, 1]` — xác suất gian lận.
-- `is_fraud`: boolean — `fraud_score > FRAUD_THRESHOLD`.
-- `scored_at`: datetime — để FE biết node nào đã score.
-
-Đây là **đóng góp khoa học chính** của đề tài. Luồng A là dữ liệu, luồng C là giao diện, luồng B là lõi.
-
-## 2. Deploy strategy — GNN Service riêng ở `:8001`
-
-GNN model được **train trên Colab** (cần GPU), sau đó export weights (`.pt`) → copy về máy → `gnn_service.py` load ở startup và inference bằng CPU. Service này chạy trên **port 8001**, tách biệt hoàn toàn với Pipeline Service ở `:8000`.
-
-| Tiêu chí                     | GNN Service local `:8001` (CHỌN)                         | GNN trên Colab + Ngrok                    |
-| ---------------------------- | -------------------------------------------------------- | ----------------------------------------- |
-| Phụ thuộc Ngrok              | Không (chỉ Text2Cypher cần Ngrok)                        | Có — 2 Ngrok cùng lúc, rủi ro x2          |
-| Tốc độ inference             | Vài giây cho graph <50k node trên CPU                    | Nhanh hơn nhưng có network overhead       |
-| Độ ổn định demo              | Deterministic, không sợ Colab disconnect                 | Phụ thuộc Colab session                   |
-| Độ khó setup                 | Cần `torch.save` + `load_state_dict` trong file Python   | Dễ hơn (copy notebook chạy là được)       |
-| Có thể swap lên Colab sau?   | Có — chỉ đổi `GNN_BASE_URL` trong `.env`                 | —                                         |
-
-Nếu model quá lớn (>1GB) hoặc máy thiếu RAM → fallback: đổi `GNN_BASE_URL=https://xxx.ngrok.io` trỏ sang Colab. NestJS không sửa code vì đã decouple qua env.
-
-## 3. Luồng dữ liệu `/api/data/score`
-
-```
-User bấm "Chạy phân tích fraud" trên FE
-        │
-        ▼
-POST /api/data/score { threshold?: 0.5 }
-        │
-        ▼
-NestJS: đọc graph từ Neo4j → export JSON { nodes, edges, features }
-        │
-        ▼
-GNN Service :8001 /predict-fraud → chạy GNN inference → trả { tx_id: score } map
-        │
-        ▼
-NestJS: UNWIND batch SET t.fraud_score, t.is_fraud, t.scored_at
-        │
-        ▼
-Update :DatasetMeta { scoredAt, fraudThreshold, gnnVersion, fraudCount, avgScore }
-        │
-        ▼
-Response { scoredCount, fraudCount, avgScore, durationMs }
-```
-
-**GNN Service không đụng Neo4j**: chỉ nhận graph dạng JSON và trả score. Tránh chia sẻ credentials, dễ swap implementation, dễ unit test.
-
-## 4. Các quyết định thiết kế
-
-- **Manual trigger, không auto-run sau build**: user bấm nút riêng → demo moment đẹp ("Đây là graph thô, bây giờ cho GNN chạy → các node đỏ lên!").
-- **Cho phép re-score nhiều lần**: mỗi lần ghi đè `fraud_score` cũ, cập nhật `scored_at`. Cho phép thử threshold khác nhau mà không rebuild graph.
-- **Threshold trong body request**: `threshold` là tham số per-request, mặc định lấy `FRAUD_THRESHOLD` từ `.env`. FE có thể có slider cho thầy thấy ngưỡng ảnh hưởng kết quả.
-- **Graph-structural features tự động**: `gnn_service.py` (trước khi đưa vào GNN) tự tính degree, clustering coefficient, PageRank cho mỗi node và ghép vào feature vector. NestJS không biết việc này.
-- **Module NestJS tách biệt**: `fraud-scoring/` có client `gnn.client.ts` chỉ gọi `:8001`, không đụng tới `pipeline.client.ts` của luồng A.
-
----
-
-# LUỒNG C — Text2Cypher (Natural Language Query)
-
-## 1. Vai trò
-
-User hỏi tiếng Việt → LLM sinh Cypher → chạy Neo4j → trả graph cho FE render. Sau khi luồng A + B đã chạy, luồng C có thể truy vấn cả cấu trúc (*"giao dịch chung card"*) và nhãn fraud (*"các giao dịch bị AI đánh dấu gian lận"*).
-
-## 2. Đường đi
-
-```
-POST /graph/query { prompt }
-  NestJS → gọi Ngrok AI với timeout 180s
-         → nhận Cypher string
-         → run READ session trên Neo4j
-         → format { nodes, links, scalars } bằng graph.formatter.ts
-  Response { status, generatedCypher, graphData, scalars }
-```
-
-## 3. Ngrok cho Colab LLM — cần biết 4 rủi ro
-
-Đã decoupled qua `AI_PROVIDER={mock|ngrok}`, đổi qua `.env` không sửa code.
-
-| Rủi ro                                                | Mitigation                                                                                                         |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| URL Ngrok đổi mỗi lần restart Colab                   | Mỗi buổi demo: copy URL mới vào `.env` → restart NestJS. Cân nhắc **Cloudflare Tunnel** (miễn phí, URL cố định).   |
-| Colab disconnect sau 12h / idle                       | Trong notebook: keep-alive ping JS (click mỗi 5 phút) + `while True: time.sleep(60)`. Reconnect trước demo 15 phút. |
-| Free Ngrok có trang cảnh báo → NestJS nhận HTML       | `NgrokAiService` **phải gửi header `ngrok-skip-browser-warning: true`**. Nhớ khi setup lần đầu.                    |
-| Rate limit free 40 req/phút                           | Demo dùng <40 query → không đụng giới hạn. Nếu lo → Cloudflare Tunnel.                                             |
-
-**Plan B bắt buộc:** nếu Ngrok/Colab chết giữa demo → `AI_PROVIDER=mock` → `MockAiService` trả Cypher cố định cho 5-10 câu đã chuẩn bị trước.
-
----
-
-## Yêu cầu môi trường
+## 2. Yêu cầu môi trường
 
 - Node.js 18+
-- Neo4j 5+ chạy local (mặc định `bolt://localhost:7687`). **Khuyến nghị cài plugin APOC** (dùng `apoc.merge.node` cho dynamic label).
-- Python 3.10+ với **2 FastAPI microservice** chạy song song, **bind loopback only**:
-  - **Pipeline Service** (`pipeline.py`) → `http://127.0.0.1:8000` (Llama classify + chuẩn hoá CSV).
-  - **GNN Service** (`gnn_service.py`) → `http://127.0.0.1:8001` (load weights + inference fraud).
-- File weights GNN (`gnn.pt` hoặc tương tự) đã train xong, copy vào thư mục của `gnn_service.py`.
-- (Tuỳ chọn) Link Ngrok/Cloudflare Tunnel tới Colab chạy Text2Cypher LLM.
-
-Khởi động 2 FastAPI service (mỗi cái trong 1 terminal):
-
-```bash
-# Terminal 1 — Pipeline Service
-uvicorn pipeline:app --host 127.0.0.1 --port 8000
-
-# Terminal 2 — GNN Service
-uvicorn gnn_service:app --host 127.0.0.1 --port 8001
-```
-
-Có thể gộp bằng 1 script `start-services.ps1` / `start-services.sh` chạy cả 2 background.
-
-## Cài đặt
-
-```bash
-npm install
-cp .env.example .env
-mkdir uploads
-```
-
-## Chạy
-
-```bash
-npm run dev          # watch mode
-npm run start
-npm run start:prod
-```
-
-Server mặc định `http://localhost:3000`.
-
-## Biến môi trường
-
-| Biến                           | Ý nghĩa                                                                   | Mặc định                |
-| ------------------------------ | ------------------------------------------------------------------------- | ----------------------- |
-| `PORT`                         | Port NestJS                                                               | `3000`                  |
-| `AI_PROVIDER`                  | Text2Cypher backend: `mock` \| `ngrok`                                    | `mock`                  |
-| `AI_BASE_URL`                  | URL Ngrok/Cloudflare tunnel tới Colab (Text2Cypher)                       | —                       |
-| `AI_TIMEOUT_MS`                | Timeout Text2Cypher (self-loop 3 vòng)                                    | `180000`                |
-| `PIPELINE_BASE_URL`            | **Pipeline Service** (`pipeline.py`) — Llama classify                     | `http://127.0.0.1:8000` |
-| `PIPELINE_TIMEOUT_MS`          | Timeout Pipeline Service (classify 30-180s)                               | `180000`                |
-| `PIPELINE_ANALYZE_SAMPLE_ROWS` | Số row Llama đọc để classify                                              | `200`                   |
-| `GNN_BASE_URL`                 | **GNN Service** (`gnn_service.py`) — fraud inference                      | `http://127.0.0.1:8001` |
-| `GNN_TIMEOUT_MS`               | Timeout GNN Service (inference 5-60s, có thể kéo dài nếu graph lớn)       | `180000`                |
-| `GNN_VERSION`                  | Version string ghi vào `:DatasetMeta` (truy vết model)                    | `v1.0`                  |
-| `FRAUD_THRESHOLD`              | Ngưỡng mặc định convert `fraud_score` → `is_fraud`                        | `0.5`                   |
-| `UPLOAD_DIR`                   | Thư mục CSV upload                                                        | `uploads`               |
-| `UPLOAD_MAX_MB`                | Giới hạn CSV                                                              | `50`                    |
-| `BUILD_BATCH_SIZE`             | Số row / transaction khi UNWIND vào Neo4j                                 | `1000`                  |
+- Neo4j 5+ chạy local (mặc định `bolt://localhost:7687`). Khuyến nghị plugin **APOC** (cho `apoc.create.relationship` dynamic relationship type).
+- Python 3.10+ với `csvtograph_sidecar.py` chạy local (cần `torch`, `torch-geometric`, `pandas`, `scikit-learn`, `fastapi`, `uvicorn`).
+- (CSV2Graph) Colab notebook chạy `python-services/colab/csv2graph_colab.py` qua ngrok.
+- (Text2Cypher) Colab notebook chạy Qwen2 Text2Cypher qua ngrok.
 
 ---
 
-## API Contract
+## 3. Cài đặt & chạy
 
-### Phần 1 — Neo4j connection (dùng chung cả 3 luồng)
+```bash
+# Cài deps NestJS
+npm install
+cp .env.example .env
 
-#### `POST /neo4j/connect`
-```json
-{ "uri": "bolt://localhost:7687", "user": "neo4j", "password": "12345678" }
+# Chạy NestJS (dev — watch mode)
+npm run dev
+
+# Chạy Python sidecar (terminal khác)
+cd python-services
+uvicorn csvtograph_sidecar:app --host 127.0.0.1 --port 8001
 ```
 
-#### `POST /neo4j/disconnect` — không body.
+NestJS mặc định `http://localhost:3000`.
+
+---
+
+## 4. Biến môi trường
+
+| Biến | Ý nghĩa | Mặc định |
+| --- | --- | --- |
+| `PORT` | Port NestJS | `3000` |
+| `AI_PROVIDER` | Text2Cypher backend (`mock` \| `ngrok`) — hiện chỉ dùng `ngrok` | `mock` |
+| `TEXT2CYPHER_URL` | URL ngrok Colab Text2Cypher (có `/generate` + `/correct`) | — |
+| `AI_TIMEOUT_MS` | Timeout call Colab Text2Cypher | `180000` |
+| `CSV2GRAPH_LLM_URL` | URL ngrok Colab CSV2Graph (có `/classify-schema`) | — |
+| `CSV2GRAPH_TIMEOUT_MS` | Timeout call Colab `/classify-schema` | `300000` |
+| `CSV2GRAPH_SIDECAR_URL` | URL Python sidecar local (build `data.pt`) | `http://127.0.0.1:8001` |
+| `CSV2GRAPH_SIDECAR_TIMEOUT_MS` | Timeout call sidecar `/build-data-pt` | `600000` |
+| `CSV2GRAPH_OUTPUT_DIR` | Folder lưu output theo jobId (relative `process.cwd()`) | `data/csv2graph` |
+| `CSV2GRAPH_MAX_GROUP_SIZE` | Cap số node mỗi relation group | `500` |
+| `CSV2GRAPH_NODE_BATCH_SIZE` | Batch size UNWIND nodes vào Neo4j | `5000` |
+| `CSV2GRAPH_EDGE_BATCH_SIZE` | Batch size UNWIND edges vào Neo4j | `10000` |
+| `CSV2GRAPH_USE_APOC` | `auto` \| `true` \| `false` (auto = detect runtime) | `auto` |
+
+---
+
+## 5. API Contract (cho Front-End)
+
+Tất cả response đều có shape chuẩn:
+
+```json
+// Success (200)
+{ "status": "success", "...": "data" }
+
+// Error (4xx/5xx)
+{ "status": "error", "message": "...", "statusCode": 502 }
+```
+
+Global filter `AllExceptionsFilter` chuẩn hoá mọi lỗi.
+
+### 5.1. Neo4j connection
+
+#### `POST /neo4j/connect`
+
+Kết nối driver Neo4j. Phải gọi trước mọi endpoint dùng Neo4j.
+
+```json
+// Request
+{
+  "uri": "bolt://localhost:7687",
+  "user": "neo4j",
+  "password": "12345678",
+  "dbId": "fraud_db"
+}
+
+// Response
+{ "status": "success", "message": "Đã kết nối tới bolt://localhost:7687 (dbId: fraud_db)" }
+```
+
+`dbId` (optional): khi set, schema sẽ được cache tại `data/schemas/schema_<dbId>.txt` để Text2Cypher dùng lại lần sau (không cần query Neo4j lại).
+
+#### `POST /neo4j/disconnect`
+
+Đóng driver. Không body.
+
+```json
+{ "status": "success", "message": "Đã ngắt kết nối" }
+```
 
 #### `GET /neo4j/status`
+
 ```json
 { "status": "success", "connected": true, "uri": "bolt://localhost:7687" }
 ```
 
-### Phần 2 — Data Pipeline (luồng A)
+---
 
-#### `POST /api/data/upload` — `multipart/form-data`, field `file`
+### 5.2. CSV2Graph (Luồng A) — `POST /csv2graph/run`
 
-```json
-{
-  "status": "success",
-  "fileName": "transactions_1713456789.csv",
-  "originalName": "transactions.csv",
-  "sizeBytes": 1048576,
-  "rowCount": 12345,
-  "columns": ["tx_id", "card_number", "ip", "amount", "timestamp"],
-  "uploadedAt": "2026-04-20T10:15:30.000Z"
-}
-```
+`multipart/form-data`. Một-shot endpoint: upload CSV → trả tất cả kết quả.
 
-Errors: `400` (không phải CSV / vượt size / CSV rỗng / header trùng), `500` (không ghi được `uploads/`).
+**Request fields:**
 
-#### `POST /api/data/classify`
+| Field | Loại | Bắt buộc | Mặc định |
+| --- | --- | --- | --- |
+| `file` | CSV file | có | — |
+| `targetLabel` | string (tên cột nhãn) | có | — |
+| `maxGroupSize` | int (≥2) | không | env hoặc `500` |
+| `trainRatio` | float (0.01..0.99) | không | `0.4` |
+| `valRatio` | float (0.01..0.99) | không | `0.2` |
+| `seed` | int | không | `42` |
+| `nodeLabel` | string (label Neo4j) | không | `Transaction` |
+| `ingestNeo4j` | bool | không | `true` |
 
-Request: `{ "fileName": "transactions_1713456789.csv" }`. Chờ 30-180s.
-
-Response:
+**Response:**
 
 ```json
 {
   "status": "success",
-  "classification": {
-    "columns": [
-      { "name": "tx_id",       "suggested": "id",          "confidence": 0.98, "rationale": "Unique per row" },
-      { "name": "card_number", "suggested": "related_col", "confidence": 0.95, "rationale": "Cột định danh thẻ lặp giữa giao dịch" },
-      { "name": "ip",          "suggested": "related_col", "confidence": 0.90, "rationale": "Có thể lặp khi cùng thiết bị" },
-      { "name": "amount",      "suggested": "feature",     "confidence": 0.99, "rationale": "Giá trị số, đơn vị tiền" },
-      { "name": "timestamp",   "suggested": "feature",     "confidence": 0.85, "rationale": "Mốc thời gian" }
-    ],
-    "sampleRows": [ /* 3-5 dòng đầu */ ]
-  }
-}
-```
-
-Errors: `400` (fileName không tồn tại), `502` (FastAPI off/error), `504` (quá timeout).
-
-#### `POST /api/data/build`
-
-Request:
-
-```json
-{
-  "fileName": "transactions_1713456789.csv",
-  "confirm": true,
-  "classification": {
-    "columns": [
-      { "name": "tx_id",       "type": "id" },
-      { "name": "card_number", "type": "related_col", "hubLabel": "Card" },
-      { "name": "ip",          "type": "related_col", "hubLabel": "IP" },
-      { "name": "amount",      "type": "feature" },
-      { "name": "timestamp",   "type": "feature" },
-      { "name": "notes",       "type": "ignore" }
-    ]
-  }
-}
-```
-
-- `hubLabel` tuỳ chọn; nếu bỏ trống NestJS PascalCase từ tên cột (`card_number` → `Card`).
-- `confirm: true` **bắt buộc**, BE reject nếu thiếu (destructive action).
-- BE check cột `id` phải unique trong CSV; nếu trùng → `400` ngay stage này (không chờ tới build).
-
-Response:
-
-```json
-{
-  "status": "success",
-  "transactionsCreated": 12345,
-  "hubsCreated": { "Card": 1250, "IP": 3420 },
-  "edgesCreated": 24690,
-  "durationMs": 18540,
-  "datasetMeta": {
-    "datasetId": "ds_1713456789",
-    "fileName": "transactions_1713456789.csv",
-    "builtAt": "2026-04-20T10:20:15.000Z",
-    "hubLabels": ["Card", "IP"],
-    "featureProperties": ["amount", "timestamp"],
-    "scoredAt": null,
-    "fraudThreshold": null,
-    "gnnVersion": null
-  }
-}
-```
-
-Errors: `400` (thiếu confirm / classification sai format / id không unique), `409` (Neo4j chưa connect), `422` (không có `related_col` nào), `500` (Cypher fail — rollback transaction), `502` (FastAPI fail).
-
-#### `GET /api/data/dataset`
-
-Trả metadata dataset hiện tại (đọc từ `:DatasetMeta`). Giúp FE biết graph đã build chưa, đã score chưa.
-
-```json
-{
-  "status": "success",
-  "dataset": {
-    "datasetId": "ds_1713456789",
-    "fileName": "transactions_1713456789.csv",
-    "builtAt": "2026-04-20T10:20:15.000Z",
-    "hubLabels": ["Card", "IP"],
-    "featureProperties": ["amount", "timestamp"],
-    "scoredAt": "2026-04-20T10:25:30.000Z",
-    "fraudThreshold": 0.5,
-    "gnnVersion": "v1.0",
-    "fraudCount": 347,
-    "avgScore": 0.12
-  }
-}
-```
-
-Nếu chưa build: `dataset: null`.
-
-### Phần 3 — GNN Fraud Scoring (luồng B, MỚI)
-
-#### `POST /api/data/score`
-
-Request (threshold tuỳ chọn):
-
-```json
-{ "threshold": 0.5 }
-```
-
-Response:
-
-```json
-{
-  "status": "success",
-  "scoredCount": 12345,
-  "fraudCount": 347,
-  "avgScore": 0.12,
-  "maxScore": 0.98,
-  "threshold": 0.5,
-  "gnnVersion": "v1.0",
-  "durationMs": 4820
-}
-```
-
-Errors:
-
-- `409` — Neo4j chưa connect / chưa build graph (không có `:Transaction` nào).
-- `502` — FastAPI `/predict-fraud` fail.
-- `504` — quá `PIPELINE_TIMEOUT_MS`.
-- `500` — lỗi khi ghi score lại Neo4j (rollback transaction).
-
-Lưu ý: endpoint này **idempotent trên logic re-run**, mỗi lần gọi ghi đè `fraud_score` cũ. FE nên warning nếu user re-score sau khi đã tinh chỉnh threshold.
-
-### Phần 4 — Text2Cypher (luồng C, đã có)
-
-#### `POST /graph/query`
-
-```json
-{ "prompt": "liệt kê các giao dịch fraud_score > 0.8 chung card" }
-```
-
-```json
-{
-  "status": "success",
-  "generatedCypher": "MATCH (t:Transaction)-[:HAS_CARD]->(c:Card)<-[:HAS_CARD]-(other:Transaction) WHERE t.fraud_score > 0.8 RETURN t, c, other",
-  "graphData": {
-    "nodes": [ /* ... */ ],
-    "links": [ /* ... */ ]
+  "jobId": "2026-05-07T15-42-38-723Z_mock_transactions_483a905a",
+  "schema": {
+    "node_id": "node_id",
+    "relation_cols": ["cc_num", "merchant"],
+    "feature_cols": ["amt", "category", "..."],
+    "encoded_feature_cols": ["amt", "category_grocery_pos", "category_gas_transport", "..."],
+    "target_label": "is_fraud",
+    "train_ratio": 0.4, "val_ratio": 0.2, "seed": 42, "max_group_size": 500
   },
-  "scalars": []
+  "stats": {
+    "inputRows": 12345,
+    "numNodes": 12345,
+    "numEdges": 24690,
+    "numFeatures": 12,
+    "numEncodedFeatures": 47,
+    "numRelationTypes": 2,
+    "ingested": { "nodes": 12345, "relationships": 24690 }
+  },
+  "files": {
+    "inputCsv": "...input.csv",
+    "nodesCsv": "...nodes.csv",
+    "edgesCsv": "...edges.csv",
+    "schemaJson": "...schema.json",
+    "preprocessedCsv": "...preprocessed.csv",
+    "dataPt": "...data.pt"
+  }
 }
 ```
 
-System prompt của LLM phía Colab **cần biết** về property `fraud_score`, `is_fraud`, `scored_at`, và các hub label chuẩn. Mỗi lần rebuild graph → hub label có thể đổi → cân nhắc gửi `:DatasetMeta` kèm prompt (out-of-scope README này, làm ở phase sau).
+`numFeatures` = số raw cols (= cột feature trong `nodes.csv`). `numEncodedFeatures` = chiều của tensor `x` trong `data.pt` (sau one-hot).
+
+**Errors:**
+- `400` — thiếu `file`, file rỗng, `targetLabel` không có trong header CSV.
+- `502` — Colab `/classify-schema` lỗi / sidecar `/build-data-pt` lỗi.
+- `504` — quá timeout (Colab/sidecar không phản hồi).
+- `500` — file system / Neo4j ingest lỗi.
+
+Chi tiết kiến trúc xem mục [§6](#6-csv2graph-chi-tiết).
 
 ---
 
-## Response shape chuẩn
+### 5.3. Text2Cypher (Luồng C) — `POST /graph/query`
 
-**Success** (HTTP 200):
-```json
-{ "status": "success", "...": "data" }
-```
-
-**Error** (HTTP 400/401/409/422/500/502/504):
-```json
-{ "status": "error", "message": "[Pipeline] Llama không phân loại được cột 'xxx'", "statusCode": 502 }
-```
-
-Ví dụ lỗi từ GNN Service:
-```json
-{ "status": "error", "message": "[GNN] Chưa load được weights — cần restart service :8001", "statusCode": 502 }
-```
-
-Ví dụ lỗi từ Ngrok Text2Cypher:
-```json
-{ "status": "error", "message": "[AI] Timeout sau 180s — kiểm tra Colab có còn chạy không", "statusCode": 504 }
-```
-
-Global exception filter bắt mọi lỗi, gắn prefix theo nguồn để FE phân biệt:
-- `[Pipeline]` — lỗi từ Pipeline Service `:8000`.
-- `[GNN]` — lỗi từ GNN Service `:8001`.
-- `[AI]` — lỗi từ Ngrok Text2Cypher.
-
----
-
-## Contract NestJS ↔ FastAPI
-
-**2 service riêng biệt, mỗi service bind `127.0.0.1` loopback only, không cần API key.**
-
-### Pipeline Service — `http://127.0.0.1:8000` (`pipeline.py`)
-
-Phụ trách luồng A (classify + prepare-build). Preload Llama ở `lifespan` startup.
-
-#### `GET /health`
-```json
-{ "status": "ok", "service": "pipeline", "model": "llama", "loaded": true }
-```
-NestJS ping lúc startup + trước mỗi request `/api/data/classify` và `/api/data/build` để fail-fast.
-
-#### `POST /classify-columns` (luồng A stage 2)
-```json
-// Request
-{ "fileName": "...", "filePath": "/abs/...", "sampleRows": 200 }
-
-// Response
-{
-  "columns": [
-    { "name": "...", "suggested": "id|related_col|feature|ignore", "confidence": 0.9, "rationale": "..." }
-  ],
-  "sampleRows": [ /* 3-5 dòng */ ]
-}
-```
-
-#### `POST /prepare-build` (luồng A stage 3)
-```json
-// Request
-{ "fileName": "...", "filePath": "/abs/...", "classification": { /* ... */ } }
-
-// Response
-{
-  "transactionRows": [
-    { "tx_id": "T1", "features": { "amount": 500, "timestamp": 1713000000 } }
-  ],
-  "edgeRows": [
-    { "tx_id": "T1", "hubLabel": "Card", "edgeType": "HAS_CARD", "hubValue": "1111" }
-  ],
-  "stats": { "rowCount": 12345, "uniqueHubValues": { "Card": 1250, "IP": 3420 } }
-}
-```
-
-Pipeline Service **không đụng Neo4j** — chỉ sinh dữ liệu. NestJS tự UNWIND.
-
----
-
-### GNN Service — `http://127.0.0.1:8001` (`gnn_service.py`)
-
-Phụ trách luồng B (fraud scoring). Preload GNN weights ở `lifespan` startup.
-
-#### `GET /health`
-```json
-{ "status": "ok", "service": "gnn", "model": "graphsage", "loaded": true, "version": "v1.0" }
-```
-NestJS ping lúc startup + trước mỗi request `/api/data/score`.
-
-#### `POST /predict-fraud` (luồng B)
-
-NestJS export graph từ Neo4j thành JSON, gửi sang GNN Service. GNN Service tự tính graph-structural features (degree, PageRank...) và chạy inference.
+Truy vấn graph bằng câu hỏi tiếng Việt. NestJS làm Schema Linking (gọi `/generate` 2 lần — full schema + linked schema) → Self-Correction Loop (`EXPLAIN` + `/correct` retry tối đa 3 lần) → Execute Cypher trên Neo4j.
 
 ```json
 // Request
-{
-  "nodes": [
-    { "tx_id": "T1", "features": { "amount": 500, "timestamp": 1713000000 } },
-    { "tx_id": "T2", "features": { "amount": 1200, "timestamp": 1713000100 } }
-  ],
-  "edges": [
-    { "tx_id": "T1", "hubLabel": "Card", "hubValue": "1111" },
-    { "tx_id": "T2", "hubLabel": "Card", "hubValue": "1111" },
-    { "tx_id": "T1", "hubLabel": "IP",   "hubValue": "10.0.0.1" }
-  ]
-}
+{ "prompt": "liệt kê các giao dịch chung card với giao dịch fraud" }
+```
 
-// Response
+**Response (success):**
+
+```json
 {
-  "scores": [
-    { "tx_id": "T1", "fraud_score": 0.87 },
-    { "tx_id": "T2", "fraud_score": 0.12 }
-  ],
-  "gnnVersion": "v1.0-graphsage",
-  "inferenceMs": 3200
+  "status": "success",
+  "generatedCypher": "MATCH (t:Transaction)-[:HAS_CARD]->(c:Card)<-[:HAS_CARD]-(other:Transaction) WHERE other.is_fraud = true RETURN t, c, other",
+  "graphData": {
+    "nodes": [ { "id": "...", "label": "Transaction", "properties": { "...": "..." } } ],
+    "links": [ { "source": "...", "target": "...", "type": "HAS_CARD" } ]
+  },
+  "scalars": [],
+  "metadata": {
+    "retries": 0,
+    "cypherV1": "MATCH (t:Transaction)...",
+    "cypherV2": "MATCH (t:Transaction)-[:HAS_CARD]->..."
+  }
 }
 ```
 
-GNN Service **không đụng Neo4j** — chỉ nhận graph JSON và trả score. Tránh credential sharing.
+- `metadata.retries` — số lần self-correction loop chạy (0 = `EXPLAIN` pass ngay).
+- `metadata.cypherV1` — Cypher từ `/generate` lần 1 (full schema).
+- `metadata.cypherV2` — Cypher từ `/generate` lần 2 (linked schema, đã filter).
+
+**Response (failure khi self-correction không sửa được):** HTTP `400`.
+
+```json
+{
+  "status": "error",
+  "message": "Không thể tạo Cypher query hợp lệ sau khi tự sửa",
+  "statusCode": 400
+}
+```
+
+**Errors:**
+- `400` — prompt trống / Cypher generation thất bại / Cypher execute lỗi.
+- `500` — `TEXT2CYPHER_URL` chưa cấu hình.
+- `502` — Colab Text2Cypher lỗi.
+- Connect Neo4j trước; nếu chưa connect, mọi query lookup schema sẽ fail.
 
 ---
 
-## Cấu trúc thư mục
+### 5.4. GNN Fraud Scoring (Luồng B) — chưa implement
+
+Sẽ thêm sau. Khi xong sẽ có endpoint dạng `POST /fraud/score` đọc `data.pt` (hoặc graph từ Neo4j) → chạy GNN inference → ghi `fraud_score` + `is_fraud` lên `:Transaction` trong Neo4j.
+
+---
+
+## 6. CSV2Graph chi tiết
+
+### 6.1. Pipeline
+
+```mermaid
+flowchart LR
+  FE[Frontend] -->|"multipart"| Nest["NestJS POST /csv2graph/run"]
+  Nest -->|"POST /classify-schema<br/>{columns, samples, targetLabel}"| Colab["Colab + ngrok<br/>Llama-3.2-3B"]
+  Colab -->|"{node_id, relation_cols, feature}"| Nest
+  Nest --> Files["Local files in jobDir<br/>nodes.csv, edges.csv,<br/>schema.json, preprocessed.csv"]
+  Nest -->|"POST /build-data-pt<br/>{ jobDir }"| Side["Python sidecar :8001<br/>torch + torch_geometric"]
+  Side -->|"reads files"| Files
+  Side -->|"writes data.pt"| Files
+  Side -->|"{stats}"| Nest
+  Nest --> Neo[(Neo4j ingest)]
+  Nest -->|"jobId, files, stats"| FE
+```
+
+8 bước trong [`csv2graph.service.ts`](src/csv2graph/csv2graph.service.ts):
+
+1. Parse CSV (`csv-parse`) + filter cột ẩn `V1..Vn`.
+2. `SchemaLlmService` → Colab `/classify-schema` (Llama-3.2-3B).
+3. Enforce rules + add hidden features (`V1..Vn` quay lại làm feature ẩn).
+4. `FeatureService.ensureNodeId` (raw rows) + `preprocessFeatures` (clone + one-hot + cast float → encoded rows).
+5. `StarGraphService.buildStarEdges` từ raw rows (cap `maxGroupSize`).
+6. `CsvOutputService` ghi `nodes.csv` (RAW), `edges.csv`, `schema.json` (chứa cả `feature_cols` raw + `encoded_feature_cols`).
+7. (optional) `Neo4jIngestService` → UNWIND batch ingest từ raw rows.
+8. `writePreprocessedCsv` (encoded) → `DataPtService` → sidecar `/build-data-pt` → sidecar đọc lại `edges.csv` để đảm bảo `data.pt` cùng cấu trúc graph với CSV → trả stats về NestJS.
+
+### 6.2. Raw vs Encoded — phân biệt rõ
+
+| File / Sink | Dữ liệu | Lý do |
+| --- | --- | --- |
+| `nodes.csv` | RAW (vd `category="grocery_pos"`) | Người đọc, debug, import vào tool khác |
+| `edges.csv` | RAW `node_id` + `relation_type` | Cấu trúc graph, đọc-được |
+| Neo4j ingest | RAW property values | Cypher `WHERE n.category = 'grocery_pos'` tự nhiên |
+| `preprocessed.csv` | ENCODED (one-hot, float) | Input cho sidecar build `data.pt` |
+| `data.pt` (`x`) | ENCODED + `StandardScaler` | Tensor input cho GNN |
+| `data.pt` (`edge_index`) | Map từ chính `edges.csv` | Cùng cấu trúc graph với CSV |
+
+### 6.3. Mô hình đồ thị
+
+Mỗi dòng CSV = 1 node `:Transaction` (hoặc label tuỳ `nodeLabel`). Các transaction liên kết **gián tiếp** qua hub theo từng `relation_col` (cùng card, cùng merchant…).
+
+LLM Llama-3.2-3B phân loại tự động mỗi cột thành 1 trong 3 vai trò:
+
+| Vai trò | Ý nghĩa | Sử dụng |
+| --- | --- | --- |
+| `node_id` | Khoá chính (unique per row), tối đa 1 cột. NestJS auto-generate nếu LLM không tìm được. | Primary key của transaction node |
+| `relation_cols` | Cột tham chiếu — giá trị giống nhau ⇒ liên kết. | Build star edges (cap `maxGroupSize` để tránh group quá lớn) |
+| `feature` | Cột đặc trưng (số / categorical / boolean) | Lưu property + dùng cho GNN |
+
+Cột `targetLabel` luôn là cột nhãn nhị phân (vd `is_fraud`).
+
+### 6.4. Colab side (Llama-3.2-3B)
+
+File [`python-services/colab/csv2graph_colab.py`](../python-services/colab/csv2graph_colab.py) — copy 1 cell vào Colab:
+
+- Load `unsloth/Llama-3.2-3B-Instruct-bnb-4bit`.
+- Endpoint duy nhất: `POST /classify-schema` body `{ validColumns, sampleValues, targetLabel }` → `{ node_id, relation_cols, feature }`.
+- `GET /health`.
+- Expose qua ngrok port 8000 → copy URL vào `CSV2GRAPH_LLM_URL`.
+
+### 6.5. Python sidecar (build data.pt)
+
+File [`python-services/csvtograph_sidecar.py`](../python-services/csvtograph_sidecar.py) — chạy local cùng máy với NestJS:
+
+- FastAPI bind `127.0.0.1:8001` (loopback only).
+- `POST /build-data-pt` body `{ jobDir }` → đọc `<jobDir>/preprocessed.csv` + `<jobDir>/edges.csv` + `<jobDir>/schema.json`, build PyG `Data`:
+  - `x` từ `encoded_feature_cols` trong `preprocessed.csv` (`StandardScaler`).
+  - `y` từ `target_label`.
+  - `edge_index` map từ `edges.csv` (KHÔNG rebuild edges → đảm bảo data.pt và CSV cùng cấu trúc graph).
+  - `train_mask` / `val_mask` / `test_mask` qua `add_splits` (fallback non-stratified khi class quá ít).
+- `torch.save` xuống `<jobDir>/data.pt`. Trả `{ success, dataPt, stats }`.
+
+Sidecar reuse `_extract_features` + `_extract_labels` + `add_splits` từ [`csvtograph/graph_utils.py`](../python-services/csvtograph/graph_utils.py).
+
+### 6.6. Lưu ý
+
+- **Không truyền binary qua ngrok**: NestJS chỉ gửi `{validColumns, sampleValues, targetLabel}` (vài KB) sang Colab. CSV và `data.pt` chỉ tồn tại local.
+- **Sidecar bind loopback**: không expose ra LAN/Internet.
+- **One-hot encoding trong NestJS**: cardinality cao tốn RAM. Service log warning khi unique values >50.
+- **APOC**: nếu Neo4j có APOC → `apoc.create.relationship` cho dynamic type `SAME_<COL>`. Không có APOC → fallback `SAME_RELATION` + property `type`. Toggle qua `CSV2GRAPH_USE_APOC`.
+- **CSV write synchronous** (`fs.writeFileSync`) thay vì stream để tránh race condition khi sidecar đọc file ngay sau đó.
+
+---
+
+## 7. Text2Cypher chi tiết
+
+### 7.1. Pipeline
+
+```
+POST /graph/query { prompt }
+  │
+  ├─ [Schema Linking]
+  │   ├─ SchemaService.getFullSchema(dbId)            ← cache file .txt hoặc Neo4j
+  │   ├─ Colab /generate LẦN 1 (full schema)          → cypherV1
+  │   ├─ SchemaService.filterSchemaByQuery(cypherV1)  → linked schema
+  │   └─ Colab /generate LẦN 2 (linked schema)        → cypherV2
+  │
+  ├─ [Self-Correction Loop] (max 3 retries)
+  │   ├─ Neo4j EXPLAIN cypherV2
+  │   ├─ Pass → finalCypher ✓
+  │   └─ Fail → Colab /correct (error_log) → retry EXPLAIN
+  │
+  ├─ Execute finalCypher (Neo4j READ session)
+  └─ Response { status, generatedCypher, graphData, scalars, metadata }
+```
+
+### 7.2. Schema cache
+
+Lần đầu connect (có `dbId`): NestJS fetch schema + 3-5 sample examples mỗi node label từ Neo4j → lưu `data/schemas/schema_<dbId>.txt`. Các lần sau chỉ đọc file cache.
+
+### 7.3. Colab endpoints
+
+NestJS gọi 2 endpoint của Colab Text2Cypher (`TEXT2CYPHER_URL`):
+
+| Endpoint | Body | Response |
+| --- | --- | --- |
+| `POST /generate` | `{ question, schema }` | `{ cypher }` |
+| `POST /correct` | `{ question, schema, wrong_cypher, error_log }` | `{ cypher }` |
+
+### 7.4. Ngrok tips
+
+- URL ngrok đổi mỗi lần restart Colab → cập nhật `TEXT2CYPHER_URL` + restart NestJS.
+- Free ngrok có cảnh báo trang HTML → NestJS gửi header `ngrok-skip-browser-warning: true` (đã handle trong `NgrokAiService`).
+- Colab disconnect ~12h → keep-alive JS trong notebook.
+
+---
+
+## 8. Cấu trúc thư mục
 
 ```
 src/
-├── main.ts                    CORS + ValidationPipe + ExceptionFilter + bootstrap
-├── app.module.ts              ConfigModule + wire tất cả module
+├── main.ts                    CORS + ValidationPipe + ExceptionFilter
+├── app.module.ts              Wire tất cả module
 ├── common/
-│   └── http-exception.filter.ts   Global filter, prefix [Pipeline]/[GNN]/[AI] theo nguồn lỗi
-├── neo4j/                         Quản lý driver (chia sẻ cho A, B, C)
-│   ├── neo4j.service.ts           getReadSession() + getWriteSession()
+│   └── http-exception.filter.ts
+├── neo4j/                     Connect/disconnect/status + EXPLAIN helper
+│   ├── neo4j.module.ts
 │   ├── neo4j.controller.ts
+│   ├── neo4j.service.ts
 │   └── dto/connect-neo4j.dto.ts
-├── data-pipeline/                 LUỒNG A — CSV → Graph
-│   ├── data-pipeline.module.ts
-│   ├── data-pipeline.controller.ts     /upload, /classify, /build, /dataset
-│   ├── data-pipeline.service.ts
-│   ├── graph-builder.service.ts        UNWIND batch + wipe + DatasetMeta + rollback
-│   ├── clients/
-│   │   └── pipeline.client.ts          Gọi Pipeline Service :8000 (health/classify/prepare-build)
-│   ├── storage/
-│   │   └── upload.storage.ts           Multer disk storage
-│   └── dto/
-│       ├── classify-request.dto.ts
-│       ├── build-request.dto.ts
-│       └── classification.types.ts
-├── fraud-scoring/                 LUỒNG B — GNN Scoring (module riêng, port riêng)
-│   ├── fraud-scoring.module.ts
-│   ├── fraud-scoring.controller.ts     POST /api/data/score
-│   ├── fraud-scoring.service.ts        export graph Neo4j → GNN → ghi lại
-│   ├── clients/
-│   │   └── gnn.client.ts               Gọi GNN Service :8001 (health/predict-fraud)
-│   └── dto/score-request.dto.ts
-├── ai/                            LLM Text2Cypher client
-│   ├── ai.interface.ts
-│   ├── ai.service.ts              MockAiService (Plan B khi Ngrok die)
-│   ├── ngrok-ai.service.ts        Gửi `ngrok-skip-browser-warning` header
-│   └── ai.module.ts
-└── graph/                         LUỒNG C — Text2Cypher
-    ├── graph.controller.ts        POST /graph/query
-    ├── graph.formatter.ts
-    └── dto/query.dto.ts
+├── csv2graph/                 LUỒNG A — CSV → Graph (one-shot pipeline)
+│   ├── csv2graph.module.ts
+│   ├── csv2graph.controller.ts        POST /csv2graph/run
+│   ├── csv2graph.service.ts           Orchestrator 8 steps
+│   ├── schema-llm.service.ts          Colab /classify-schema
+│   ├── feature.service.ts             ensureNodeId + preprocessFeatures (clone)
+│   ├── star-graph.service.ts          buildStarEdges (cap maxGroupSize)
+│   ├── csv-output.service.ts          writeNodesCsv/EdgesCsv/SchemaJson/PreprocessedCsv
+│   ├── neo4j-ingest.service.ts        UNWIND batch ingest (APOC optional)
+│   ├── data-pt.service.ts             Gọi sidecar /build-data-pt
+│   ├── dto/csv2graph-run.dto.ts
+│   ├── dto/csv2graph-result.dto.ts
+│   └── interfaces/classification-schema.interface.ts
+├── text2cypher/               LUỒNG C — Schema Linking + Self-Correction
+│   ├── text2cypher.module.ts
+│   ├── text2cypher.service.ts         generateCypher / generateWithSchemaLinking / selfCorrectionLoop
+│   ├── schema.service.ts              getFullSchema + filterSchemaByQuery + cache .txt
+│   └── dto/text2cypher-result.dto.ts
+├── graph/                     Public endpoint cho Text2Cypher
+│   ├── graph.module.ts
+│   ├── graph.controller.ts            POST /graph/query → Text2CypherService → format
+│   ├── graph.formatter.ts             Convert neo4j Records → { nodes, links, scalars }
+│   └── dto/query.dto.ts
+└── ai/                        Legacy AI client (dùng riêng cho NgrokAiService)
+    ├── ai.interface.ts
+    ├── ai.service.ts                   MockAiService (Plan B khi ngrok die)
+    ├── ngrok-ai.service.ts             Gửi `ngrok-skip-browser-warning`
+    └── ai.module.ts
 ```
 
-**Lưu ý kiến trúc**: `data-pipeline/clients/pipeline.client.ts` và `fraud-scoring/clients/gnn.client.ts` là 2 HttpService wrapper hoàn toàn độc lập, **không chia sẻ code**. Mỗi cái có DI token riêng, config riêng (`PIPELINE_BASE_URL` vs `GNN_BASE_URL`), timeout riêng. Mục đích là để khi 1 service fail, phần còn lại vẫn hoạt động.
-
-`uploads/` ở root, **đã gitignore**.
-
----
-
-## Điểm thiết kế
-
-- **3 luồng đồng cấp**: CSV→Graph (hạ tầng), GNN (lõi AI), Text2Cypher (UX). Mỗi luồng có module NestJS riêng, không dependency chéo.
-- **Orchestrator pattern tuyệt đối**: NestJS không chứa logic AI. Llama ở Pipeline Service, GNN ở GNN Service, LLM ở Colab. NestJS chỉ điều phối + persist.
-- **Tách biệt 2 FastAPI service** (`:8000` Pipeline, `:8001` GNN): lifecycle độc lập, memory isolation, crash isolation, dễ migrate từng cái.
-- **Star/Hub graph model**: transaction-centric, chuẩn cho fraud detection (IEEE-CIS, Elliptic đều dùng).
-- **4-way column classification** (`id`/`related_col`/`feature`/`ignore`) với confidence + rationale để user quyết định tỉnh táo.
-- **UNWIND thay vì LOAD CSV**: không phụ thuộc `import/` folder của Neo4j, demo không vỡ vì filesystem config.
-- **GNN local trong GNN Service**: tránh Ngrok thứ 2, deterministic, dễ bảo vệ ("model chạy offline").
-- **Cả 2 FastAPI service không đụng Neo4j**: NestJS là client duy nhất. Tránh credential sharing, dễ swap implementation.
-- **Re-score được**: demo thử threshold khác nhau mà không rebuild graph.
-- **Build irreversible + confirm flag**: tránh xoá nhầm dữ liệu đã score.
-- **`:DatasetMeta` node**: single source of truth về graph hiện tại — luồng B và C đều đọc từ đây.
-- **Decoupling qua `.env`**: `AI_PROVIDER`, `PIPELINE_BASE_URL`, `GNN_BASE_URL` đều env-driven. Swap không cần sửa code.
-- **Timeout 180s** cho mọi HTTP client gọi AI/ML (Pipeline, GNN, Ngrok).
-- **Loopback binding** cho cả 2 FastAPI thay vì API key → demo đơn giản, đủ an toàn.
-- **Plan B mock**: nếu Ngrok chết giữa demo → `AI_PROVIDER=mock` → `MockAiService` trả Cypher sẵn cho ~10 câu demo.
-- **Response shape nhất quán**: global filter format mọi lỗi, có prefix nguồn (`[Pipeline]` / `[GNN]` / `[AI]`).
+`data/csv2graph/<jobId>/` — output mỗi lần chạy `/csv2graph/run` (đã gitignore).
+`data/schemas/schema_<dbId>.txt` — cache schema cho Text2Cypher.
 
 ---
 
-## Checklist "sống còn" demo thesis
-
-1. **Khởi động đủ 3 tầng trước demo**: Neo4j → Pipeline Service `:8000` → GNN Service `:8001` → (Ngrok Colab) → NestJS → FE. Có script `start-services.ps1`/`.sh` để 1 lệnh khởi động cả Python lẫn Node.
-2. **Timeout ≥ 180s** trên mọi HTTP client (Pipeline, GNN, Ngrok).
-3. **Health check kép ở startup NestJS**: ping cả `:8000/health` và `:8001/health`, log warning nếu 1 trong 2 off — không chặn server start, chỉ cảnh báo.
-4. **FE progress chi tiết** (SSE hoặc polling) cho `/classify`, `/build`, `/score`, `/graph/query` — mỗi cái có thể 1-3 phút.
-5. **Decoupling bằng `.env`**: không hardcode URL nào.
-6. **Confirm destructive action**: `/build` xoá graph cũ → UI phải confirm dialog.
-7. **Fallback chain**:
-   - Ngrok chết → `AI_PROVIDER=mock`.
-   - Pipeline Service chết → endpoint `/api/data/classify` và `/api/data/build` trả `502` rõ ràng "Cần khởi động Pipeline Service ở :8000".
-   - GNN Service chết → endpoint `/api/data/score` trả `502` rõ ràng "Cần khởi động GNN Service ở :8001". Luồng A và C vẫn hoạt động.
-   - Neo4j chết → reject ở connection layer.
-8. **Ngrok skip-browser-warning header**: dễ quên, test ngay khi cắm Ngrok thật lần đầu.
-9. **Keep-alive Colab**: cell JS click trong notebook, reconnect 15 phút trước demo.
-10. **Chuẩn bị 10 câu Cypher cho Mock**: phòng trường hợp Ngrok chết giữa bảo vệ.
-
----
-
-## Test thủ công (Postman)
+## 9. Test thủ công (Postman)
 
 ### Setup
-
-1. `POST /neo4j/connect` → `success`.
+1. `POST /neo4j/connect` `{ uri, user, password, dbId: "fraud_db" }` → `success`.
 2. `GET /neo4j/status` → `connected: true`.
-3. `GET /api/data/dataset` → `dataset: null`.
 
-### Luồng A — Data Pipeline (cần Pipeline Service `:8000` chạy)
+### CSV2Graph
+3. `POST /csv2graph/run` (multipart): `file` = CSV mẫu, `targetLabel` = `is_fraud` → trả `jobId`, `schema`, `stats`, `files`.
+4. Kiểm tra folder `data/csv2graph/<jobId>/`: phải có đủ `input.csv`, `nodes.csv` (raw), `edges.csv`, `schema.json`, `preprocessed.csv` (encoded), `data.pt`.
+5. Mở Neo4j Browser → `MATCH (n) RETURN count(n)` → thấy nodes.
 
-4. `POST /api/data/upload` CSV hợp lệ → `fileName`, `rowCount`, `columns`.
-5. `POST /api/data/upload` file `.txt` → `400`.
-6. `POST /api/data/classify` → chờ 30-180s → `columns` có `suggested`, `confidence`, `rationale`.
-7. `POST /api/data/classify` khi Pipeline Service off → `502` với prefix `[Pipeline]`.
-8. `POST /api/data/build` thiếu `confirm` → `400`.
-9. `POST /api/data/build` không có `related_col` → `422`.
-10. `POST /api/data/build` id không unique → `400`.
-11. `POST /api/data/build` đầy đủ → `transactionsCreated > 0`, `edgesCreated > 0`.
-12. `GET /api/data/dataset` → trả metadata bước 11.
-
-### Luồng B — GNN Scoring (cần GNN Service `:8001` chạy)
-
-13. `POST /api/data/score` khi chưa build → `409`.
-14. `POST /api/data/score` khi GNN Service off (Pipeline vẫn on) → `502` với prefix `[GNN]`. Chứng minh isolation: luồng A vẫn hoạt động.
-15. `POST /api/data/score` sau bước 11 → chờ 5-30s → `scoredCount = transactionsCreated`, `fraudCount > 0`.
-16. `POST /api/data/score` với `threshold: 0.9` → `fraudCount` nhỏ hơn bước 15.
-17. `GET /api/data/dataset` → `scoredAt`, `fraudThreshold`, `gnnVersion` đã set.
-
-### Luồng C — Text2Cypher
-
-18. `POST /graph/query` với `{"prompt": "liệt kê fraud"}` → LLM nên sinh Cypher filter `is_fraud = true`.
-19. `POST /graph/query` với `{"prompt": "đếm giao dịch"}` → `scalars: [{ count: 12345 }]`.
-20. `POST /graph/query` body trống → `400`.
-21. `POST /graph/query` khi chưa connect Neo4j → `400` với message "Vui lòng kết nối Database trước!".
+### Text2Cypher
+6. `POST /graph/query` `{ "prompt": "liệt kê 10 giao dịch đầu tiên" }` → `generatedCypher` + `graphData`.
+7. `POST /graph/query` body trống → `400`.
+8. `POST /graph/query` khi chưa connect Neo4j → schema fetch fail.
 
 ### Teardown
-
-22. `POST /neo4j/disconnect` → driver đóng.
+9. `POST /neo4j/disconnect`.
 
 ---
 
-## Lộ trình triển khai
+## 10. Roadmap
 
-- [x] Module Neo4j (connect/disconnect/status)
-- [x] Module AI Text2Cypher (Interface + Mock + Ngrok)
-- [x] Module Graph (POST /graph/query + parser)
+- [x] Module Neo4j (connect/disconnect/status + dbId + EXPLAIN)
+- [x] Module Text2Cypher (Schema Linking + Self-Correction Loop)
+  - [x] `SchemaService` (fetch schema+examples, cache `.txt`, filter/linking)
+  - [x] `Text2CypherService` (`generateCypher` + `generateWithSchemaLinking` + `selfCorrectionLoop`)
+  - [x] Colab endpoints `/generate` + `/correct`
+- [x] Module Graph (`POST /graph/query` → `Text2CypherService` → format)
+- [x] Module CSV2Graph (luồng A)
+  - [x] `POST /csv2graph/run` one-shot pipeline (multipart upload)
+  - [x] Schema LLM (Colab Llama-3.2-3B `/classify-schema`)
+  - [x] Feature engineering raw + encoded copy (no mutate)
+  - [x] Star topology edges
+  - [x] CSV outputs (raw nodes + edges + schema + encoded preprocessed)
+  - [x] Neo4j UNWIND batch ingest (APOC + fallback)
+  - [x] Python sidecar `csvtograph_sidecar.py` build `data.pt`
 - [x] Global exception filter + CORS + DTO validation
-- [ ] **Module DataPipeline (luồng A) — đang chờ review README**
-  - [ ] `POST /api/data/upload` + Multer + parse header
-  - [ ] `pipeline.client.ts` gọi Pipeline Service `:8000` + health check
-  - [ ] `POST /api/data/classify`
-  - [ ] `POST /api/data/build` + GraphBuilderService (UNWIND + wipe + rollback)
-  - [ ] `GET /api/data/dataset` đọc `:DatasetMeta`
-- [ ] **Module FraudScoring (luồng B)**
-  - [ ] `gnn.client.ts` gọi GNN Service `:8001` + health check
-  - [ ] `POST /api/data/score` export graph Neo4j → GNN → ghi lại
-  - [ ] Cập nhật `:DatasetMeta` với scoredAt / fraudThreshold / gnnVersion / fraudCount / avgScore
-- [ ] Thêm header `ngrok-skip-browser-warning` vào `NgrokAiService`
-- [ ] Health check kép lúc startup NestJS (ping `:8000` và `:8001`, warning nếu off)
-- [ ] SSE progress cho 3 endpoint chậm (classify, build, score)
-- [ ] Chuẩn bị Mock Cypher cho 10 câu demo (backup Plan B)
-- [ ] Script `start-services.ps1` / `.sh` khởi động Pipeline + GNN + NestJS 1 lệnh
-- [ ] FE tích hợp (xem `FRONTEND_KICKOFF.md`)
+- [ ] **Module Fraud Scoring (luồng B — GNN inference)** — chưa làm
+- [ ] FE tích hợp đầy đủ 3 luồng
 - [ ] Unit + E2E test
