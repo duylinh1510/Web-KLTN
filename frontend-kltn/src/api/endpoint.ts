@@ -4,11 +4,14 @@ import type {
   ConnectNeo4jResponse,
   DisconnectNeo4jResponse,
   Neo4jStatusResponse,
+  DatabasesResponse,
+  SwitchDatabaseResponse,
   QueryRequest,
   QueryResponse,
   DatasetInfoResponse,
   Csv2GraphRunResponse,
   GraphPreviewResponse,
+  SuggestTransactionIdResponse,
 } from "../types";
 
 /**
@@ -41,6 +44,30 @@ export async function disconnectNeo4j(): Promise<DisconnectNeo4jResponse> {
  */
 export async function getNeo4jStatus(): Promise<Neo4jStatusResponse> {
   const res = await apiClient.get<Neo4jStatusResponse>("/neo4j/status");
+  return res.data;
+}
+
+/**
+ * GET /neo4j/databases
+ * Lấy danh sách database online từ SHOW DATABASES.
+ * Fallback ["neo4j"] nếu Community Edition.
+ */
+export async function listDatabases(): Promise<DatabasesResponse> {
+  const res = await apiClient.get<DatabasesResponse>("/neo4j/databases");
+  return res.data;
+}
+
+/**
+ * POST /neo4j/switch-database
+ * Chuyển sang database khác trong cùng DBMS (không cần reconnect).
+ */
+export async function switchDatabase(
+  database: string,
+): Promise<SwitchDatabaseResponse> {
+  const res = await apiClient.post<SwitchDatabaseResponse>(
+    "/neo4j/switch-database",
+    { database },
+  );
   return res.data;
 }
 
@@ -100,6 +127,21 @@ export async function runCsv2Graph(
  */
 export async function getGraphPreview(): Promise<GraphPreviewResponse> {
   const res = await apiClient.get<GraphPreviewResponse>("/graph/preview");
+  return res.data;
+}
+
+/**
+ * POST /csv2graph/suggest-transaction-id
+ * Gửi headers + sample values, nhận gợi ý cột transaction_id từ LLM.
+ */
+export async function suggestTransactionId(body: {
+  headers: string[];
+  sampleValues: Record<string, unknown[]>;
+}): Promise<SuggestTransactionIdResponse> {
+  const res = await apiClient.post<SuggestTransactionIdResponse>(
+    "/csv2graph/suggest-transaction-id",
+    body,
+  );
   return res.data;
 }
 

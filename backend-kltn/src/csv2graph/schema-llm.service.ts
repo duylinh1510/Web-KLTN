@@ -146,6 +146,71 @@ export class SchemaLlmService {
   }
 
   // ============================================================
+  // PUBLIC: Transaction ID suggestion
+  // ============================================================
+
+  /**
+   * Gợi ý cột transaction_id bằng LLM.
+   *
+   * Logic:
+   *   1. Tính các cột unique (số giá trị duy nhất = số rows) — phía FE
+   *      đã filter nhưng để an toàn ta tính lại ở đây.
+   *   2. Gửi headers + sampleValues + uniqueCols sang Colab.
+   *   3. Trả về suggestion (null nếu không xác định được).
+   */
+  async suggestTransactionId(
+    headers: string[],
+    sampleValues: Record<string, unknown[]>,
+    rows: CsvRow[],
+  ): Promise<{ suggestion: string | null; uniqueCols: string[] }> {
+    // Tính các cột có giá trị unique (distinct count = row count)
+    const totalRows = rows.length;
+    const uniqueCols: string[] = [];
+
+    for (const col of headers) {
+      const distinctValues = new Set<string>();
+      let hasNull = false;
+      for (const row of rows) {
+        const v = row[col];
+        if (v === null || v === undefined || v === '') {
+          hasNull = true;
+          break;
+        }
+        distinctValues.add(String(v));
+      }
+      // Cột unique: không null, tất cả giá trị khác nhau
+      if (!hasNull && distinctValues.size === totalRows) {
+        uniqueCols.push(col);
+      }
+    }
+
+    if (uniqueCols.length === 0) {
+      this.logger.log('No unique columns found, suggestion = null');
+      return { suggestion: null, uniqueCols: [] };
+    }
+
+    // Gửi sang Colab để LLM chọn cột hợp lý nhất
+    try {
+      const baseUrl = this.getBaseUrl();
+      const timeout = this.getTimeout();
+      const { data } = await firstValueFrom(
+        this.http.post<{ suggestion: string | null }>(
+          `${baseUrl}/suggest-transaction-id`,
+          { headers: uniqueCols, sampleValues, uniqueCols },
+          { timeout },
+        ),
+      );
+      return { suggestion: data?.suggestion ?? null, uniqueCols };
+    } catch (error: any) {
+      // Fallback: trả unique col đầu tiên nếu Colab không response
+      this.logger.warn(
+        `suggest-transaction-id Colab call failed, fallback to first unique col: ${error?.message}`,
+      );
+      return { suggestion: uniqueCols[0] ?? null, uniqueCols };
+    }
+  }
+
+  // ============================================================
   // PRIVATE: HTTP call
   // ============================================================
 

@@ -26,7 +26,7 @@ export function useConnectNeo4j() {
   return useMutation({
     mutationFn: (body: ConnectNeo4jRequest) => connectNeo4j(body),
     onSuccess: (data, variables) => {
-      setConnected(variables.uri.trim(), variables.user.trim(), variables.dbId);
+      setConnected(variables.uri.trim(), variables.user.trim(), variables.dbId, variables.database);
       toast.success(data.message ?? "Đã kết nối tới Neo4j");
       qc.invalidateQueries({ queryKey: NEO4J_STATUS_QUERY_KEY });
     },

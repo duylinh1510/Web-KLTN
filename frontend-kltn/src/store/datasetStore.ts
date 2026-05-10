@@ -12,6 +12,13 @@ type DatasetState = {
   targetLabel: string | null;
   numNodes: number;
   jobId: string | null;
+  /**
+   * true = đã train GNN model (data.pt tồn tại).
+   * FE dùng để:
+   *   - Hiển thị badge "Có thể Inference Fraud" trên DatasetInfo
+   *   - Khi upload dữ liệu mới → cho phép chạy inference thay vì chỉ ingest
+   */
+  hasModel: boolean;
 };
 
 type DatasetActions = {
@@ -22,6 +29,7 @@ type DatasetActions = {
     targetLabel?: string;
     numNodes?: number;
     jobId?: string;
+    hasModel?: boolean;
   }) => void;
   reset: () => void;
 };
@@ -33,6 +41,7 @@ const initialState: DatasetState = {
   targetLabel: null,
   numNodes: 0,
   jobId: null,
+  hasModel: false,
 };
 
 export const useDatasetStore = create<DatasetState & DatasetActions>()((set) => ({
@@ -46,6 +55,7 @@ export const useDatasetStore = create<DatasetState & DatasetActions>()((set) => 
       targetLabel: payload.hasData ? (payload.targetLabel ?? null) : null,
       numNodes: payload.hasData ? (payload.numNodes ?? 0) : 0,
       jobId: payload.hasData ? (payload.jobId ?? null) : null,
+      hasModel: payload.hasData ? (payload.hasModel ?? false) : false,
     }),
 
   reset: () => set({ ...initialState }),

@@ -7,37 +7,66 @@ import {
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import axios from 'axios';
 
+/**
+ * Neo4jService — quản lý kết nối driver + database selection.
+ *
+ * Flow database selection:
+ *   1. User connect (URI + user + password) → driver init
+ *   2. listDatabases() → gọi SHOW DATABASES → trả danh sách
+ *   3. User chọn database → switchDatabase() → cập nhật currentDatabase
+ *   4. Mọi session sau đó dùng currentDatabase
+ */
 @Injectable()
 export class Neo4jService implements OnModuleDestroy {
-  private driver: Driver | null = null; // Khởi tạo ban đầu là rỗng
+  private driver: Driver | null = null;
   private currentUri: string | null = null;
   private currentDbId: string | null = null;
 
-  // Hàm này sẽ được gọi từ Controller khi user nhập form trên web
-  async connect(uri: string, user: string, pass: string, dbId?: string): Promise<boolean> {
+  /**
+   * Database đang active (từ SHOW DATABASES).
+   * Null = dùng default database của Neo4j instance.
+   */
+  private currentDatabase: string | null = null;
+
+  // ============================================================
+  // Connect / Disconnect
+  // ============================================================
+
+  /**
+   * Kết nối tới Neo4j DBMS.
+   * dbId: cache key cho schema metadata (tuỳ chọn).
+   * database: database name để dùng trong session (tuỳ chọn, null = default).
+   */
+  async connect(
+    uri: string,
+    user: string,
+    pass: string,
+    dbId?: string,
+    database?: string,
+  ): Promise<boolean> {
     try {
-      // Đóng kết nối cũ nếu có (để user có thể đổi DB khác)
+      // Đóng kết nối cũ nếu có
       if (this.driver) await this.driver.close();
 
       this.driver = neo4j.driver(uri, neo4j.auth.basic(user, pass));
 
-      // Chạy thử một lệnh ping để xác nhận kết nối sống
+      // Ping để xác nhận kết nối sống
       await this.driver.getServerInfo();
+
       this.currentUri = uri;
       this.currentDbId = dbId ?? null;
+      this.currentDatabase = database ?? null;
       return true;
     } catch (error: any) {
       this.driver = null;
       this.currentUri = null;
       this.currentDbId = null;
+      this.currentDatabase = null;
       console.error('[Neo4j connect failed]', error.code, error.message);
 
       const code = error?.code ?? '';
       if (code.includes('Unauthorized')) {
-        throw new HttpException(
-          'Sai username/password',
-          HttpStatus.UNAUTHORIZED,
-        );
+        throw new HttpException('Sai username/password', HttpStatus.UNAUTHORIZED);
       }
       if (
         code.includes('ServiceUnavailable') ||
@@ -61,16 +90,84 @@ export class Neo4jService implements OnModuleDestroy {
       this.driver = null;
       this.currentUri = null;
       this.currentDbId = null;
+      this.currentDatabase = null;
     }
   }
 
-  getStatus(): { connected: boolean; uri: string | null; dbId: string | null } {
-    return { connected: this.driver !== null, uri: this.currentUri, dbId: this.currentDbId };
+  // ============================================================
+  // Status & Getters
+  // ============================================================
+
+  getStatus(): {
+    connected: boolean;
+    uri: string | null;
+    dbId: string | null;
+    database: string | null;
+  } {
+    return {
+      connected: this.driver !== null,
+      uri: this.currentUri,
+      dbId: this.currentDbId,
+      database: this.currentDatabase,
+    };
   }
 
   getDbId(): string | null {
     return this.currentDbId;
   }
+
+  getCurrentDatabase(): string | null {
+    return this.currentDatabase;
+  }
+
+  // ============================================================
+  // Database Selection
+  // ============================================================
+
+  /**
+   * Lấy danh sách database từ SHOW DATABASES.
+   * Lọc bỏ "system" database (internal).
+   * Yêu cầu driver đã connect.
+   */
+  async listDatabases(): Promise<string[]> {
+    const session = this.getReadSession();
+    try {
+      const result = await session.run('SHOW DATABASES YIELD name, currentStatus WHERE currentStatus = "online" RETURN name ORDER BY name');
+      return result.records
+        .map((r) => r.get('name') as string)
+        .filter((name) => name !== 'system');
+    } catch (error: any) {
+      // Fallback: Neo4j Community edition không hỗ trợ SHOW DATABASES
+      // → trả về ["neo4j"] (default database)
+      console.warn(
+        '[Neo4j] SHOW DATABASES failed, fallback to ["neo4j"]:', error.message,
+      );
+      return ['neo4j'];
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Switch sang database khác trong cùng DBMS.
+   * Không cần reconnect driver, chỉ cập nhật currentDatabase.
+   * Các session mới sẽ tự động dùng database này.
+   *
+   * @param database - Tên database (từ SHOW DATABASES)
+   */
+  switchDatabase(database: string): void {
+    if (!this.driver) {
+      throw new HttpException(
+        'Vui lòng kết nối Database trước!',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    this.currentDatabase = database;
+  }
+
+  // ============================================================
+  // Session Factory
+  // ============================================================
 
   getReadSession(): Session {
     if (!this.driver) {
@@ -79,7 +176,11 @@ export class Neo4jService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    return this.driver.session({
+      defaultAccessMode: neo4j.session.READ,
+      // Nếu currentDatabase được set thì dùng, không thì Neo4j driver dùng default
+      ...(this.currentDatabase ? { database: this.currentDatabase } : {}),
+    });
   }
 
   getWriteSession(): Session {
@@ -89,13 +190,22 @@ export class Neo4jService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return this.driver.session({ defaultAccessMode: neo4j.session.WRITE });
+    return this.driver.session({
+      defaultAccessMode: neo4j.session.WRITE,
+      ...(this.currentDatabase ? { database: this.currentDatabase } : {}),
+    });
   }
+
+  // ============================================================
+  // Utilities
+  // ============================================================
 
   async hasApoc(): Promise<boolean> {
     const session = this.getReadSession();
     try {
-      await session.run("CALL apoc.help('apoc.create.relationship') YIELD name RETURN name LIMIT 1");
+      await session.run(
+        "CALL apoc.help('apoc.create.relationship') YIELD name RETURN name LIMIT 1",
+      );
       return true;
     } catch {
       return false;
@@ -121,7 +231,7 @@ export class Neo4jService implements OnModuleDestroy {
       RETURN relType, collect(propertyName + ': ' + propertyTypes[0]) AS properties
     `);
 
-      // 3. Relationship structure (quan trọng - model cần biết A-[:REL]->B)
+      // 3. Relationship structure
       const structRes = await session.run(`
       MATCH (a)-[r]->(b)
       RETURN DISTINCT 
@@ -149,7 +259,7 @@ export class Neo4jService implements OnModuleDestroy {
             : `- ${type}\n`;
       });
 
-      // Format relationship structure ← phần này model cần nhất
+      // Format relationship structure
       schemaStr += '\nRelationship structure:\n';
       structRes.records.forEach((record) => {
         const from = record.get('from');
@@ -165,10 +275,8 @@ export class Neo4jService implements OnModuleDestroy {
   }
 
   async generateCypherFromText(question: string): Promise<string> {
-    // 1. Tự động lấy Schema mới nhất (cover luôn trường hợp bạn mới import CSV)
     const currentSchema = await this.getDatabaseSchema();
 
-    // In ra console để bạn kiểm chứng Schema đã được lấy thành công
     console.log('--- SCHEMA ĐƯỢC GỬI SANG COLAB ---');
     console.log(currentSchema);
     console.log('----------------------------------');
@@ -178,11 +286,10 @@ export class Neo4jService implements OnModuleDestroy {
     try {
       const response = await axios.post(colabUrl, {
         question,
-        schema: currentSchema, // Schema tự động được gửi đi!
+        schema: currentSchema,
       });
 
       const cypher = response.data.cypher.replace(/\\n/g, '\n');
-
       return cypher;
     } catch (error) {
       console.error('Lỗi khi gọi Colab API:', error.message);
@@ -193,7 +300,9 @@ export class Neo4jService implements OnModuleDestroy {
     }
   }
 
-  async executeCypherExplain(cypher: string): Promise<{ success: boolean; error?: string }> {
+  async executeCypherExplain(
+    cypher: string,
+  ): Promise<{ success: boolean; error?: string }> {
     const session = this.getReadSession();
     try {
       await session.run(`EXPLAIN ${cypher}`);

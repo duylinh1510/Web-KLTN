@@ -35,6 +35,7 @@ export function useDatasetInfo() {
         targetLabel: query.data.targetLabel,
         numNodes: query.data.numNodes,
         jobId: query.data.jobId,
+        hasModel: query.data.hasModel,
       });
     }
   }, [query.isSuccess, query.data, syncFromInfo]);

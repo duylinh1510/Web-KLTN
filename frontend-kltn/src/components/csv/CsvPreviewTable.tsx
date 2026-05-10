@@ -88,12 +88,12 @@ export function CsvPreviewTable({
       </div>
 
       {extraColumns.length > 0 && (
-        <div className="rounded border border-red-900/60 bg-red-950/40 px-2.5 py-1.5 text-[11px] text-red-300">
-          <strong>Cột thừa</strong> (không có trong dataset hiện tại):
+        <div className="rounded border border-blue-900/60 bg-blue-950/30 px-2.5 py-1.5 text-[11px] text-blue-300">
+          <strong>Cột thừa</strong> (không có trong schema gốc):
           {" "}
           <span className="font-mono">{extraColumns.join(", ")}</span>
-          <div className="mt-0.5 text-red-400/80">
-            BE sẽ reject khi build. Vui lòng sửa CSV.
+          <div className="mt-0.5 text-blue-400/80">
+            Backend sẽ tự bỏ qua — không ảnh hưởng build.
           </div>
         </div>
       )}

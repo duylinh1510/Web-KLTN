@@ -29,6 +29,8 @@ export type ConnectNeo4jRequest = {
   user: string;
   password: string;
   dbId?: string;
+  /** Database name (từ SHOW DATABASES). Null = default database của DBMS. */
+  database?: string;
 };
 
 export type ConnectNeo4jResponse = ApiSuccess<{ message: string }>;
@@ -38,6 +40,16 @@ export type Neo4jStatusResponse = ApiSuccess<{
   connected: boolean;
   uri: string | null;
   dbId: string | null;
+  database: string | null;
+}>;
+
+/** GET /neo4j/databases — danh sách database online từ SHOW DATABASES */
+export type DatabasesResponse = ApiSuccess<{ databases: string[] }>;
+
+/** POST /neo4j/switch-database */
+export type SwitchDatabaseResponse = ApiSuccess<{
+  message: string;
+  database: string;
 }>;
 
 // ============================================================
@@ -109,6 +121,8 @@ export type DatasetInfoResponse = ApiSuccess<{
   targetLabel?: string;
   numNodes?: number;
   jobId?: string;
+  /** true nếu đã train GNN model — FE dùng để hiển thị "Có thể Inference Fraud" */
+  hasModel?: boolean;
 }>;
 
 export type Csv2GraphFullSchema = {
@@ -155,6 +169,14 @@ export type GraphPreviewResponse = ApiSuccess<{
   nodeLabel: string;
   graphData: GraphData;
   scalars: Scalar[];
+}>;
+
+/** POST /csv2graph/suggest-transaction-id */
+export type SuggestTransactionIdResponse = ApiSuccess<{
+  /** Cột được LLM gợi ý, null nếu không xác định được */
+  suggestion: string | null;
+  /** Danh sách cột unique (số lượng giá trị duy nhất = số rows) */
+  uniqueCols: string[];
 }>;
 
 // ============================================================

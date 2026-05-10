@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useConnectNeo4j } from "../../hooks/useConnectNeo4j";
+import { useDatabaseList, useSwitchDatabase } from "../../hooks/useDatabaseSelector";
+import { useConnectionStore } from "../../store/connectionStore";
 import {
   NEO4J_URI_PRESETS,
   DEFAULT_NEO4J_USER,
@@ -19,8 +21,14 @@ export function ConnectForm() {
   const [errors, setErrors] = useState<FormErrors>({});
 
   const mutation = useConnectNeo4j();
+  const isConnected = useConnectionStore((s) => s.isConnected);
+  const currentDatabase = useConnectionStore((s) => s.database);
 
-  // Reset password sau khi connect thành công (đúng ràng buộc sống còn #1)
+  // Database list + switch (chỉ active sau khi connected)
+  const { data: databases, isLoading: dbLoading } = useDatabaseList();
+  const switchMutation = useSwitchDatabase();
+
+  // Reset password sau khi connect thành công
   useEffect(() => {
     if (mutation.isSuccess) setPassword("");
   }, [mutation.isSuccess]);
@@ -144,7 +152,83 @@ export function ConnectForm() {
       >
         {isPending ? "Đang kết nối..." : "Connect"}
       </button>
+
+      {/*
+       * ── Database Selector ──
+       * Hiển thị sau khi connected. Cho phép switch database
+       * mà không cần disconnect (nhưng cần reconnect nếu muốn đổi URI/user).
+       * Khi switch, BE cập nhật database trong session, FE invalidate cache.
+       */}
+      {isConnected && (
+        <DatabaseSelector
+          databases={databases ?? []}
+          currentDatabase={currentDatabase}
+          isLoading={dbLoading}
+          isSwitching={switchMutation.isPending}
+          onSwitch={(db) => switchMutation.mutate(db)}
+        />
+      )}
     </form>
+  );
+}
+
+// ============================================================
+// DatabaseSelector — dropdown chọn database
+// ============================================================
+
+function DatabaseSelector({
+  databases,
+  currentDatabase,
+  isLoading,
+  isSwitching,
+  onSwitch,
+}: {
+  databases: string[];
+  currentDatabase: string | null;
+  isLoading: boolean;
+  isSwitching: boolean;
+  onSwitch: (db: string) => void;
+}) {
+  if (isLoading) {
+    return (
+      <div className="text-[11px] text-slate-500 animate-pulse">
+        Đang tải danh sách database...
+      </div>
+    );
+  }
+
+  if (databases.length === 0) return null;
+
+  return (
+    <div className="rounded-md border border-slate-700/60 bg-slate-900/60 p-2.5 space-y-1.5">
+      <label className="block text-[10px] font-medium uppercase tracking-wide text-slate-400">
+        Database đang dùng
+      </label>
+      <select
+        id="neo4j-database-select"
+        value={currentDatabase ?? ""}
+        onChange={(e) => {
+          const val = e.target.value;
+          if (val && val !== currentDatabase) onSwitch(val);
+        }}
+        disabled={isSwitching}
+        className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none transition focus:border-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {!currentDatabase && (
+          <option value="">-- Chọn database --</option>
+        )}
+        {databases.map((db) => (
+          <option key={db} value={db}>
+            {db}
+          </option>
+        ))}
+      </select>
+      {isSwitching && (
+        <div className="text-[10px] text-emerald-400 animate-pulse">
+          Đang chuyển database...
+        </div>
+      )}
+    </div>
   );
 }
 

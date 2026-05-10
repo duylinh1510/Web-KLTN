@@ -7,15 +7,22 @@ import {
 } from './interfaces/classification-schema.interface';
 
 /**
- * Auto-ingest nodes + relationships vào Neo4j đang connected.
+ * Neo4j Ingest Service — Heterogeneous Graph
  *
- * Schema:
- *   (:<NodeLabel> {node_id, ...features, <target_label>})
- *   -[:SAME_<RELATION_COL_UPPER>]->
- *   (:<NodeLabel>)
+ * Sơ đồ schema (heterogeneous):
+ *   (:Transaction {node_id, ...features, <target_label>})
+ *   -[:HAS_<RELATION_COL_UPPER>]->
+ *   (:<RelationColTitle>Node {value: <raw_value>})
  *
- * Dùng APOC nếu có (apoc.create.relationship cho dynamic rel type),
- * fallback dùng 1 type chung 'SAME_RELATION' với property 'type'.
+ * Ví dụ với relation_cols = ["merchant", "category"]:
+ *   (:Transaction)-[:HAS_MERCHANT]->(:MerchantNode {value: "amazon"})
+ *   (:Transaction)-[:HAS_CATEGORY]->(:CategoryNode {value: "shopping"})
+ *
+ * Không dùng APOC. Không dùng SAME_RELATION.
+ * Đây là heterogeneous graph — phân biệt rõ Transaction node và Auxiliary node.
+ *
+ * NOTE: data.pt (dùng cho GNN training) vẫn dùng homogeneous star topology riêng biệt.
+ * Hai luồng này hoàn toàn độc lập.
  */
 @Injectable()
 export class Neo4jIngestService {
@@ -41,11 +48,6 @@ export class Neo4jIngestService {
       );
     }
 
-    const useApoc = await this.shouldUseApoc();
-    this.logger.log(
-      `Ingest mode: ${useApoc ? 'APOC dynamic relationship type' : 'fallback SAME_RELATION + type prop'}`,
-    );
-
     const nodeBatchSize = Number(
       this.config.get<string>('CSV2GRAPH_NODE_BATCH_SIZE') ?? 5000,
     );
@@ -53,7 +55,8 @@ export class Neo4jIngestService {
       this.config.get<string>('CSV2GRAPH_EDGE_BATCH_SIZE') ?? 10000,
     );
 
-    const ingestedNodes = await this.ingestNodes(
+    // Bước 1: Ingest transaction nodes
+    const ingestedNodes = await this.ingestTransactionNodes(
       rows,
       nodeIdCol,
       featureCols,
@@ -62,10 +65,12 @@ export class Neo4jIngestService {
       nodeBatchSize,
     );
 
-    const ingestedRels = await this.ingestEdges(
+    // Bước 2: Ingest auxiliary nodes + relationships (heterogeneous)
+    const ingestedRels = await this.ingestHeterogeneousEdges(
       edges,
+      rows,
+      nodeIdCol,
       nodeLabel,
-      useApoc,
       edgeBatchSize,
     );
 
@@ -73,17 +78,14 @@ export class Neo4jIngestService {
   }
 
   // ============================================================
-  // PRIVATE
+  // PRIVATE — Transaction Nodes
   // ============================================================
 
-  private async shouldUseApoc(): Promise<boolean> {
-    const flag = this.config.get<string>('CSV2GRAPH_USE_APOC');
-    if (flag === 'false') return false;
-    if (flag === 'true') return true;
-    return await this.neo4jService.hasApoc();
-  }
-
-  private async ingestNodes(
+  /**
+   * MERGE transaction nodes vào Neo4j.
+   * Mỗi row là một node với node_id + feature props + target_label.
+   */
+  private async ingestTransactionNodes(
     rows: CsvRow[],
     nodeIdCol: string,
     featureCols: string[],
@@ -114,7 +116,7 @@ export class Neo4jIngestService {
         });
         await session.run(cypher, { batch });
         total += slice.length;
-        this.logger.log(`  -> nodes: ${total}/${rows.length}`);
+        this.logger.log(`  -> transaction nodes: ${total}/${rows.length}`);
       }
     } finally {
       await session.close();
@@ -123,43 +125,129 @@ export class Neo4jIngestService {
     return total;
   }
 
-  private async ingestEdges(
+  // ============================================================
+  // PRIVATE — Heterogeneous Edges + Auxiliary Nodes
+  // ============================================================
+
+  /**
+   * Ingest heterogeneous edges theo từng relation_type.
+   *
+   * Với mỗi edge (src_id → dst_id, relation_type = "merchant"):
+   *   1. Tìm auxiliary node label: "MerchantNode"
+   *   2. MERGE auxiliary node: (:MerchantNode {value: dst_id})
+   *   3. MERGE edge: (:Transaction {node_id: src_id})-[:HAS_MERCHANT]->(:MerchantNode {value: dst_id})
+   *
+   * Lý do:
+   *   - Tránh lỗi SAME_RELATION (không cần APOC, không dùng dynamic rel type)
+   *   - Heterogeneous graph rõ ràng, dễ query trong Neo4j Browser
+   *   - Mỗi auxiliary entity (Merchant, Category...) là node riêng biệt
+   */
+  private async ingestHeterogeneousEdges(
     edges: EdgeRow[],
+    rows: CsvRow[],
+    nodeIdCol: string,
     nodeLabel: string,
-    useApoc: boolean,
     batchSize: number,
   ): Promise<number> {
     if (edges.length === 0) return 0;
 
-    const session = this.neo4jService.getWriteSession();
-    let total = 0;
-    try {
-      const cypher = useApoc
-        ? `
-            UNWIND $batch AS r
-            MATCH (a:${nodeLabel} {node_id: r.src_id})
-            MATCH (b:${nodeLabel} {node_id: r.dst_id})
-            CALL apoc.create.relationship(a, 'SAME_' + toUpper(r.relation_type), {}, b) YIELD rel
-            RETURN count(rel) AS c
-          `
-        : `
-            UNWIND $batch AS r
-            MATCH (a:${nodeLabel} {node_id: r.src_id})
-            MATCH (b:${nodeLabel} {node_id: r.dst_id})
-            MERGE (a)-[rel:SAME_RELATION {type: r.relation_type}]->(b)
-            RETURN count(rel) AS c
-          `;
+    // Nhóm edges theo relation_type để xử lý từng loại riêng
+    const groupedByType = new Map<string, EdgeRow[]>();
+    for (const edge of edges) {
+      const type = String(edge.relation_type);
+      if (!groupedByType.has(type)) groupedByType.set(type, []);
+      groupedByType.get(type)!.push(edge);
+    }
 
-      for (let i = 0; i < edges.length; i += batchSize) {
-        const slice = edges.slice(i, i + batchSize);
+    let totalRels = 0;
+
+    for (const [relType, relEdges] of groupedByType) {
+      // Tính auxiliary node label và relationship type
+      const auxLabel = this.toAuxNodeLabel(relType);   // vd: "MerchantNode"
+      const relTypeName = `HAS_${relType.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+
+      this.logger.log(
+        `  -> Ingesting ${relEdges.length} edges: ` +
+        `(:${nodeLabel})-[:${relTypeName}]->(:${auxLabel})`,
+      );
+
+      // Bước 1: MERGE auxiliary nodes (unique values)
+      const uniqueValues = [...new Set(relEdges.map((e) => String(e.dst_id)))];
+      await this.mergeAuxiliaryNodes(auxLabel, uniqueValues, batchSize);
+
+      // Bước 2: MERGE relationships Transaction → AuxiliaryNode
+      const session = this.neo4jService.getWriteSession();
+      try {
+        const cypher = `
+          UNWIND $batch AS r
+          MATCH (src:${nodeLabel} {node_id: r.src_id})
+          MATCH (dst:${auxLabel} {value: r.dst_id})
+          MERGE (src)-[:${relTypeName}]->(dst)
+        `;
+
+        for (let i = 0; i < relEdges.length; i += batchSize) {
+          const slice = relEdges.slice(i, i + batchSize);
+          const batch = slice.map((e) => ({
+            src_id: String(e.src_id),
+            dst_id: String(e.dst_id),
+          }));
+          await session.run(cypher, { batch });
+          totalRels += slice.length;
+          this.logger.log(
+            `  -> [${relTypeName}] edges: ${Math.min(i + batchSize, relEdges.length)}/${relEdges.length}`,
+          );
+        }
+      } finally {
+        await session.close();
+      }
+    }
+
+    return totalRels;
+  }
+
+  /**
+   * MERGE auxiliary nodes (giá trị unique của relation col).
+   * Ví dụ: MERGE (:MerchantNode {value: "amazon"})
+   */
+  private async mergeAuxiliaryNodes(
+    auxLabel: string,
+    values: string[],
+    batchSize: number,
+  ): Promise<void> {
+    if (values.length === 0) return;
+
+    const session = this.neo4jService.getWriteSession();
+    try {
+      const cypher = `
+        UNWIND $batch AS v
+        MERGE (:${auxLabel} {value: v})
+      `;
+
+      for (let i = 0; i < values.length; i += batchSize) {
+        const slice = values.slice(i, i + batchSize);
         await session.run(cypher, { batch: slice });
-        total += slice.length;
-        this.logger.log(`  -> edges: ${total}/${edges.length}`);
+        this.logger.log(
+          `  -> auxiliary (:${auxLabel}): ${Math.min(i + batchSize, values.length)}/${values.length}`,
+        );
       }
     } finally {
       await session.close();
     }
+  }
 
-    return total;
+  // ============================================================
+  // HELPERS
+  // ============================================================
+
+  /**
+   * Chuyển relation_col name thành auxiliary node label.
+   * Ví dụ: "merchant" → "MerchantNode", "card_type" → "CardTypeNode"
+   */
+  private toAuxNodeLabel(relType: string): string {
+    const pascal = relType
+      .split(/[_\s-]+/)
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
+      .join('');
+    return `${pascal}Node`;
   }
 }

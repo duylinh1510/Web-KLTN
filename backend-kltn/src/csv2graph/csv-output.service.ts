@@ -39,12 +39,13 @@ export class CsvOutputService {
     rows: CsvRow[],
     nodeIdCol: string,
     featureCols: string[],
-    targetLabel: string,
+    targetLabel: string | null,
   ): string {
     const filePath = path.join(jobDir, 'nodes.csv');
 
     const headers: string[] = [nodeIdCol, ...featureCols];
-    if (rows.length > 0 && targetLabel in rows[0]) {
+    // Chỉ thêm cột target nếu có (ingest-only mode không có target)
+    if (targetLabel && rows.length > 0 && targetLabel in rows[0]) {
       headers.push(targetLabel);
     }
 

@@ -9,7 +9,7 @@ import { StarGraphService } from './star-graph.service';
 import { CsvOutputService } from './csv-output.service';
 import { Neo4jIngestService } from './neo4j-ingest.service';
 import { DataPtService } from './data-pt.service';
-import { DatasetMetaService, DatasetMeta } from './dataset-meta.service';
+import { DatasetMetaService, DatasetMeta, RawInfo } from './dataset-meta.service';
 import { Csv2GraphRunDto } from './dto/csv2graph-run.dto';
 import {
   Csv2GraphResult,
@@ -67,7 +67,8 @@ export class Csv2GraphService {
         `====== APPEND MODE — meta.jobId=${meta!.jobId}, ` +
           `nodeLabel=${meta!.nodeLabel}, existingNodes=${numExistingNodes} ======`,
       );
-      return this.appendBuild(fileBuffer, originalFileName, dto, meta!);
+      return this.appendBuild(fileBuffer, originalFileName, dto, meta!, dbId);
+
     }
 
     this.logger.log('====== FULL BUILD MODE (DB rỗng) ======');
@@ -84,13 +85,16 @@ export class Csv2GraphService {
     dto: Csv2GraphRunDto,
     dbId: string | null,
   ): Promise<Csv2GraphResult> {
-    if (!dto.targetLabel || dto.targetLabel.trim() === '') {
+    const trainMode = dto.trainMode ?? false; // Default: chỉ ingest, không train
+
+    // targetLabel bắt buộc CHỈ khi train model
+    if (trainMode && (!dto.targetLabel || dto.targetLabel.trim() === '')) {
       throw new HttpException(
-        'targetLabel là bắt buộc khi DB rỗng (full build).',
+        'targetLabel là bắt buộc khi chọn train model.',
         HttpStatus.BAD_REQUEST,
       );
     }
-    const targetLabel = dto.targetLabel;
+    const targetLabel = dto.targetLabel?.trim() ?? '';
     const jobId = this.makeJobId(originalFileName);
     const outputRoot =
       this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
@@ -107,10 +111,14 @@ export class Csv2GraphService {
     const ingestNeo4j = dto.ingestNeo4j ?? true;
 
     this.logger.log(`====== JOB ${jobId} ======`);
-    this.logger.log(`  target_label   : ${targetLabel}`);
+    this.logger.log(`  target_label   : ${targetLabel || '(none — ingest only)'}`);
     this.logger.log(`  max_group_size : ${maxGroupSize}`);
     this.logger.log(`  node_label     : ${nodeLabel}`);
-    this.logger.log(`  ingestNeo4j=${ingestNeo4j}`);
+    this.logger.log(`  ingestNeo4j    : ${ingestNeo4j}`);
+    this.logger.log(`  trainMode      : ${trainMode}`);
+    if (dto.transactionIdCol) {
+      this.logger.log(`  transactionIdCol override: ${dto.transactionIdCol}`);
+    }
 
     const inputCsvPath = this.csvOutput.saveInputCsv(
       jobDir,
@@ -121,8 +129,15 @@ export class Csv2GraphService {
     this.logger.log('[1/8] Parsing CSV...');
     const { rows, headers } = this.parseCsv(fileBuffer);
     this.assertNonEmpty(rows);
-    this.assertHeaderHasTarget(headers, targetLabel);
+    // Validate target column chỉ khi train
+    if (trainMode && targetLabel) {
+      this.assertHeaderHasTarget(headers, targetLabel);
+    }
     this.logger.log(`  parsed: ${rows.length} rows × ${headers.length} cols`);
+
+    // Lưu headers gốc vào _raw_<dbId>.json NGAY SAU khi parse, TRƯỚC mọi xử lý.
+    // originalIdCol sẽ được cập nhật sau bước [3/8] khi biết user chọn cột nào.
+    // (Lưu tạm với headers, sẽ ghi đè sau bước ensureNodeId)
 
     this.logger.log('[2/8] LLM classify schema...');
     const classification = await this.schemaLlm.analyzeSchema(
@@ -132,6 +147,25 @@ export class Csv2GraphService {
     );
 
     this.logger.log('[3/8] Ensure node_id...');
+    // Ghi lại cột ID gốc TRƯỚC khi rename — cần để lưu _raw_.json cho append
+    // Thứ tự ưu tiên: user dropdown > LLM suggestion > auto-gen (null → 'node_id')
+    const originalIdCol: string =
+      dto.transactionIdCol && headers.includes(dto.transactionIdCol)
+        ? dto.transactionIdCol
+        : (classification.node_id ?? 'node_id');
+
+    // Nếu user đã chọn transaction_id từ dropdown → override LLM suggestion
+    if (
+      dto.transactionIdCol &&
+      headers.includes(dto.transactionIdCol) &&
+      dto.transactionIdCol !== targetLabel
+    ) {
+      this.logger.log(
+        `  -> transactionIdCol override: '${dto.transactionIdCol}' (user-selected)`,
+      );
+      classification.node_id = dto.transactionIdCol;
+    }
+
     const ensured = this.feature.ensureNodeId(
       rows,
       classification.node_id,
@@ -141,6 +175,16 @@ export class Csv2GraphService {
     const rawFeatureCols = classification.feature.filter(
       (c) => rawRows.length > 0 && c in rawRows[0],
     );
+
+    // Lưu _raw_<dbId>.json — nguồn sự thật duy nhất cho append validation.
+    // headers = tên cột GỐC (chưa rename), originalIdCol = cột user chọn làm ID.
+    if (ingestNeo4j) {
+      this.datasetMeta.saveRawInfo(dbId, {
+        originalIdCol,
+        rawColumns: headers,  // headers TRƯỚC ensureNodeId → vẫn có tên gốc
+      });
+    }
+
 
     this.logger.log('[4/8] Preprocess features (one-hot + float) — encoded copy...');
     const { encodedRows, encodedFeatureCols } = this.feature.preprocessFeatures(
@@ -157,12 +201,14 @@ export class Csv2GraphService {
     );
 
     this.logger.log('[6/8] Writing CSV outputs (raw nodes + edges + schema)...');
+    // targetLabel đưa vào schema chỉ khi train (có nhãn)
+    // Nếu ingest only: targetLabel = '' (không ghi vào schema)
     const fullSchema: FullSchema = {
       node_id: ensured.nodeIdCol,
       relation_cols: classification.relation_cols,
       feature_cols: rawFeatureCols,
       encoded_feature_cols: encodedFeatureCols,
-      target_label: targetLabel,
+      target_label: targetLabel,  // '' khi ingest-only
       train_ratio: trainRatio,
       val_ratio: valRatio,
       seed,
@@ -174,7 +220,7 @@ export class Csv2GraphService {
       rawRows,
       ensured.nodeIdCol,
       rawFeatureCols,
-      targetLabel,
+      targetLabel || null,  // null = không ghi cột target
     );
     const edgesCsvPath = this.csvOutput.writeEdgesCsv(jobDir, edges);
     const schemaJsonPath = this.csvOutput.writeSchemaJson(jobDir, fullSchema);
@@ -213,31 +259,37 @@ export class Csv2GraphService {
       this.logger.log('[7/8] Skip Neo4j ingestion (ingestNeo4j=false)');
     }
 
-    this.logger.log('[8/8] Build data.pt via Python sidecar (encoded rows)...');
-    const preCsvPath = this.csvOutput.writePreprocessedCsv(
-      jobDir,
-      encodedRows,
-      ensured.nodeIdCol,
-      encodedFeatureCols,
-      targetLabel,
-    );
-    files.preprocessedCsv = preCsvPath;
+    // ── Step 8: Build data.pt (chỉ khi trainMode=true) ──
+    if (trainMode && targetLabel) {
+      this.logger.log('[8/8] Build data.pt via Python sidecar (encoded rows)...');
+      const preCsvPath = this.csvOutput.writePreprocessedCsv(
+        jobDir,
+        encodedRows,
+        ensured.nodeIdCol,
+        encodedFeatureCols,
+        targetLabel,
+      );
+      files.preprocessedCsv = preCsvPath;
 
-    const { dataPtPath } = await this.dataPt.buildDataPt(jobDir);
-    files.dataPt = dataPtPath;
+      const { dataPtPath } = await this.dataPt.buildDataPt(jobDir);
+      files.dataPt = dataPtPath;
+    } else {
+      this.logger.log('[8/8] Skip data.pt build (trainMode=false — ingest only mode)');
+    }
 
     if (ingestNeo4j) {
       const canonicalColumns = [
         ensured.nodeIdCol,
         ...rawFeatureCols,
-        targetLabel,
+        ...(targetLabel ? [targetLabel] : []),
       ];
       this.datasetMeta.saveLatest(dbId, {
         jobId,
         nodeLabel,
         columns: canonicalColumns,
-        targetLabel,
+        targetLabel: targetLabel || '',
         schema: fullSchema,
+        trainMode,
         builtAt: new Date().toISOString(),
       });
     }
@@ -255,6 +307,7 @@ export class Csv2GraphService {
     originalFileName: string,
     dto: Csv2GraphRunDto,
     meta: DatasetMeta,
+    dbId: string | null,
   ): Promise<Csv2GraphResult> {
     const jobId = this.makeJobId(originalFileName);
     const outputRoot =
@@ -266,21 +319,12 @@ export class Csv2GraphService {
       meta.schema.max_group_size ??
       Number(this.config.get<string>('CSV2GRAPH_MAX_GROUP_SIZE')) ??
       500;
-    const nodeLabel = dto.nodeLabel ?? meta.nodeLabel;
+    const nodeLabel = meta.nodeLabel; // Append luôn dùng nodeLabel đã lưu
     const ingestNeo4j = dto.ingestNeo4j ?? true;
 
-    if (nodeLabel !== meta.nodeLabel) {
-      throw new HttpException(
-        `nodeLabel '${nodeLabel}' lệch với dataset hiện tại (${meta.nodeLabel}). ` +
-          `Append phải dùng cùng nodeLabel.`,
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-
     this.logger.log(`====== APPEND JOB ${jobId} ======`);
-    this.logger.log(`  canonical jobId : ${meta.jobId}`);
-    this.logger.log(`  target_label    : ${meta.targetLabel}`);
-    this.logger.log(`  node_label      : ${nodeLabel}`);
+    this.logger.log(`  canonical jobId  : ${meta.jobId}`);
+    this.logger.log(`  node_label       : ${nodeLabel}`);
 
     const inputCsvPath = this.csvOutput.saveInputCsv(
       jobDir,
@@ -288,57 +332,83 @@ export class Csv2GraphService {
       fileBuffer,
     );
 
+    // ── [1/6] Parse CSV ──
     this.logger.log('[1/6] Parsing CSV...');
-    const { rows, headers } = this.parseCsv(fileBuffer);
+    let { rows, headers } = this.parseCsv(fileBuffer);
     this.assertNonEmpty(rows);
 
-    this.logger.log('[2/6] Validate header subset of canonical columns...');
-    const canonicalSet = new Set(meta.columns);
-    const extraColumns = headers.filter((h) => !canonicalSet.has(h));
-    if (extraColumns.length > 0) {
+    // ── [2/6] Đọc _raw_<dbId>.json và validate columns ──
+    this.logger.log('[2/6] Validate columns against _raw_ file...');
+    const rawInfo = this.datasetMeta.loadRawInfo(dbId);
+    if (!rawInfo) {
       throw new HttpException(
-        `CSV có cột mới không thuộc dataset hiện tại: [${extraColumns.join(', ')}]. ` +
-          `Cột canonical: [${meta.columns.join(', ')}]`,
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (!headers.includes(meta.targetLabel)) {
-      throw new HttpException(
-        `CSV thiếu cột target_label '${meta.targetLabel}' (bắt buộc khi append).`,
+        `Không tìm thấy thông tin CSV gốc (_raw_${dbId ?? ''}.json). ` +
+          `Cần thực hiện Full Build lại để tạo file này.`,
         HttpStatus.BAD_REQUEST,
       );
     }
 
-    const missingColumns = meta.columns.filter((c) => !headers.includes(c));
-    if (missingColumns.length > 0) {
-      this.logger.warn(
-        `Cột thiếu sẽ được fill null: [${missingColumns.join(', ')}]`,
+    const refColumns = rawInfo.rawColumns;   // headers GỐC của CSV ban đầu
+    const refSet = new Set(refColumns);
+
+    // Cột THIẾU → lỗi
+    const missingCols = refColumns.filter((c) => !headers.includes(c));
+    if (missingCols.length > 0) {
+      throw new HttpException(
+        `CSV thiếu các cột bắt buộc: [${missingCols.join(', ')}]. ` +
+          `Cần có: [${refColumns.join(', ')}]`,
+        HttpStatus.BAD_REQUEST,
       );
-      for (const row of rows) {
-        for (const col of missingColumns) {
-          if (!(col in row)) row[col] = null;
-        }
-      }
     }
 
-    this.logger.log('[3/6] Ensure node_id (theo schema canonical)...');
-    const canonicalNodeId = meta.schema.node_id;
-    const classification: ClassificationSchema = {
-      node_id: canonicalNodeId in (rows[0] ?? {}) ? canonicalNodeId : null,
-      relation_cols: meta.schema.relation_cols,
-      feature: meta.schema.feature_cols,
-    };
-    const ensured = this.feature.ensureNodeId(
-      rows,
-      classification.node_id,
-      headers,
+    // Cột THỪA → silent drop
+    const extraCols = headers.filter((h) => !refSet.has(h));
+    if (extraCols.length > 0) {
+      this.logger.log(
+        `  Silent drop ${extraCols.length} extra col(s): [${extraCols.join(', ')}]`,
+      );
+      headers = headers.filter((h) => refSet.has(h));
+      rows = rows.map((row) => {
+        const filtered: Record<string, unknown> = {};
+        for (const col of headers) filtered[col] = (row as Record<string, unknown>)[col];
+        return filtered;
+      });
+    }
+
+    // ── [3/6] Ensure node_id dùng originalIdCol từ _raw_ file ──
+    this.logger.log(
+      `[3/6] Ensure node_id (originalIdCol='${rawInfo.originalIdCol}' từ _raw_ file)...`,
     );
+    const ensured = this.feature.ensureNodeId(rows, rawInfo.originalIdCol, headers);
     const rawRows = ensured.rows;
     const rawFeatureCols = meta.schema.feature_cols.filter(
       (c) => rawRows.length > 0 && c in rawRows[0],
     );
 
-    this.logger.log('[4/6] Build star edges...');
+    // ── [3.5/6] Kiểm tra ID trùng với dữ liệu đã có trên Neo4j ──
+    this.logger.log('[3.5/6] Checking duplicate node_ids against Neo4j...');
+    const newNodeIds = rawRows
+      .map((r) => String((r as Record<string, unknown>)['node_id'] ?? ''))
+      .filter(Boolean);
+    const duplicates = await this.datasetMeta.findDuplicateNodeIds(
+      meta.nodeLabel,
+      newNodeIds,
+    );
+    if (duplicates.length > 0) {
+      const preview = duplicates.slice(0, 10).join(', ');
+      const suffix = duplicates.length > 10 ? ` ... (+${duplicates.length - 10} more)` : '';
+      throw new HttpException(
+        `CSV mới có ${duplicates.length} node_id đã tồn tại trong DB: [${preview}${suffix}]. ` +
+          `Vui lòng kiểm tra lại dữ liệu.`,
+        HttpStatus.CONFLICT,
+      );
+    }
+    this.logger.log(`  No duplicates found (${newNodeIds.length} IDs checked)`);
+
+
+
+    // ── [4/6] Build star edges (dùng relation_cols đã lưu) ──
+    this.logger.log('[4/6] Build star edges (relation_cols từ canonical schema)...');
     const edges = this.starGraph.buildStarEdges(
       rawRows,
       ensured.nodeIdCol,
@@ -346,19 +416,17 @@ export class Csv2GraphService {
       maxGroupSize,
     );
 
+    // ── [5/6] Write CSVs ──
     this.logger.log('[5/6] Writing CSV outputs (append job dir)...');
     const nodesCsvPath = this.csvOutput.writeNodesCsv(
       jobDir,
       rawRows,
       ensured.nodeIdCol,
       rawFeatureCols,
-      meta.targetLabel,
+      meta.targetLabel || null,
     );
     const edgesCsvPath = this.csvOutput.writeEdgesCsv(jobDir, edges);
-    const schemaJsonPath = this.csvOutput.writeSchemaJson(
-      jobDir,
-      meta.schema,
-    );
+    const schemaJsonPath = this.csvOutput.writeSchemaJson(jobDir, meta.schema);
 
     const stats: Csv2GraphStats = {
       inputRows: rows.length,
@@ -376,6 +444,7 @@ export class Csv2GraphService {
       schemaJson: schemaJsonPath,
     };
 
+    // ── [6/6] Ingest Neo4j ──
     if (ingestNeo4j) {
       this.logger.log('[6/6] Ingest Neo4j (MERGE upsert by node_id)...');
       const ingested = await this.neo4jIngest.ingest(

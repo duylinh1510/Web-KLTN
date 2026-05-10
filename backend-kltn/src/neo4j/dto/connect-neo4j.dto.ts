@@ -17,4 +17,12 @@ export class ConnectNeo4jDto {
   @IsString()
   @IsOptional()
   dbId?: string;
+
+  /**
+   * Database name (từ SHOW DATABASES). Tuỳ chọn khi connect.
+   * Nếu bỏ trống, driver dùng default database của DBMS.
+   */
+  @IsString()
+  @IsOptional()
+  database?: string;
 }
