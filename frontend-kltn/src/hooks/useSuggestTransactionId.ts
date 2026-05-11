@@ -1,5 +1,4 @@
 import { useMutation } from "@tanstack/react-query";
-import { suggestTransactionId } from "../api/endpoint";
 import type { SuggestTransactionIdResponse } from "../types";
 
 /**
@@ -13,11 +12,7 @@ import type { SuggestTransactionIdResponse } from "../types";
  *   - uniqueCols: danh sách cột có giá trị unique → hiển thị trong dropdown
  */
 export function useSuggestTransactionId() {
-  return useMutation<
-    SuggestTransactionIdResponse,
-    Error,
-    { file: File }
-  >({
+  return useMutation<SuggestTransactionIdResponse, Error, { file: File }>({
     mutationFn: async ({ file }) => {
       // Gửi file trực tiếp để BE parse CSV + tính unique cols
       const formData = new FormData();

@@ -32,8 +32,6 @@ export function CsvUploadPanel() {
   const isConnected = useConnectionStore((s) => s.isConnected);
   const hasData = useDatasetStore((s) => s.hasData);
   const hasModel = useDatasetStore((s) => s.hasModel);
-  const expectedColumns = useDatasetStore((s) => s.columns);
-  const datasetTargetLabel = useDatasetStore((s) => s.targetLabel);
   const datasetNodeLabel = useDatasetStore((s) => s.nodeLabel);
 
   const { build, cancel, isPending } = useCsvBuild();
@@ -82,10 +80,8 @@ export function CsvUploadPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file]);
 
-
   // Append mode: validation hoàn toàn do backend xử lý qua _raw_<dbId>.json
   // FE không có rawColumns (chỉ có post-renamed columns) nên không validate ở đây
-
 
   const validationError = useMemo(() => {
     if (!file) return null;
@@ -95,7 +91,12 @@ export function CsvUploadPanel() {
       if (trainModel && !targetLabel.trim()) {
         return "Vui lòng chọn cột Target Feature khi train model.";
       }
-      if (trainModel && targetLabel && headers.length > 0 && !headers.includes(targetLabel)) {
+      if (
+        trainModel &&
+        targetLabel &&
+        headers.length > 0 &&
+        !headers.includes(targetLabel)
+      ) {
         return `Cột '${targetLabel}' không có trong CSV.`;
       }
     }
@@ -113,10 +114,12 @@ export function CsvUploadPanel() {
       file,
       targetLabel: hasData
         ? undefined
-        : trainModel ? targetLabel.trim() : undefined,
+        : trainModel
+          ? targetLabel.trim()
+          : undefined,
       nodeLabel: hasData
         ? (datasetNodeLabel ?? undefined)
-        : (nodeLabel.trim() || undefined),
+        : nodeLabel.trim() || undefined,
       transactionIdCol:
         !hasData && txnIdCol !== AUTO_GENERATE_OPTION ? txnIdCol : undefined,
       trainMode: !hasData ? trainModel : undefined,
@@ -165,16 +168,11 @@ export function CsvUploadPanel() {
         disabled={!isConnected || isPending}
       />
 
-      <CsvPreviewTable
-        file={file}
-        onHeadersDetected={setHeaders}
-      />
-
+      <CsvPreviewTable file={file} onHeadersDetected={setHeaders} />
 
       {/* ── Full Build Options (DB rỗng + file đã chọn) ── */}
       {!hasData && file && (
         <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
-
           {/* Node Label — luôn hiển thị, không phụ thuộc trainMode */}
           <div>
             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">
@@ -218,7 +216,8 @@ export function CsvUploadPanel() {
                   </option>
                   {uniqueCols.map((col) => (
                     <option key={col} value={col}>
-                      {col}{col === llmSuggestion ? " ← LLM gợi ý" : ""}
+                      {col}
+                      {col === llmSuggestion ? " ← LLM gợi ý" : ""}
                     </option>
                   ))}
                 </select>
@@ -227,11 +226,13 @@ export function CsvUploadPanel() {
                     ✓ LLM gợi ý cột này là Transaction ID
                   </div>
                 )}
-                {uniqueCols.length === 0 && headers.length > 0 && !isSuggesting && (
-                  <div className="mt-0.5 text-[10px] text-amber-400">
-                    Không tìm thấy cột unique — sẽ tự sinh UUID làm ID.
-                  </div>
-                )}
+                {uniqueCols.length === 0 &&
+                  headers.length > 0 &&
+                  !isSuggesting && (
+                    <div className="mt-0.5 text-[10px] text-amber-400">
+                      Không tìm thấy cột unique — sẽ tự sinh UUID làm ID.
+                    </div>
+                  )}
               </>
             )}
           </div>
