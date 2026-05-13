@@ -1,6 +1,6 @@
 import { useCallback, useId, useRef, useState, type DragEvent } from "react";
 
-const MAX_SIZE_MB = 200;
+const MAX_SIZE_MB = 500;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
 type Props = {
@@ -93,7 +93,7 @@ export function CsvDropZone({ file, onFileChange, disabled }: Props) {
           <span className="truncate" title={file.name}>
             {file.name}{" "}
             <span className="text-slate-500">
-              · {(file.size / 1024).toFixed(1)} KB
+              · {(file.size / 1024 / 1024).toFixed(1)} MB
             </span>
           </span>
           <button

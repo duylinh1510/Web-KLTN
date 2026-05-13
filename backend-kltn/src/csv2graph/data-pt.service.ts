@@ -4,11 +4,14 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
 /**
- * Gọi Python sidecar local (FastAPI port 8001) để build data.pt.
+ * Gọi Python sidecar local (FastAPI port 8002) để build data.pt.
  *
  * Sidecar đọc preprocessed.csv + schema.json từ jobDir (cùng máy NestJS),
  * build PyG Data + train/val/test masks, ghi data.pt xuống cùng folder.
  * Không upload binary qua HTTP — chỉ truyền absolute jobDir.
+ *
+ * Port 8001: GNN service (gnn_service.py)
+ * Port 8002: CSV2Graph sidecar (csvtograph_sidecar.py) — build data.pt
  */
 export interface BuildDataPtStats {
   numNodes: number;
@@ -81,7 +84,7 @@ export class DataPtService {
   private getBaseUrl(): string {
     const url =
       this.config.get<string>('CSV2GRAPH_SIDECAR_URL') ??
-      'http://127.0.0.1:8001';
+      'http://127.0.0.1:8002'; // Port 8002 (GNN service dùng 8001)
     return url.replace(/\/$/, '');
   }
 

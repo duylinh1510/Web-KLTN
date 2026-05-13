@@ -30,7 +30,7 @@ export class Csv2GraphController {
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {
-        fileSize: 200 * 1024 * 1024,
+        fileSize: 500 * 1024 * 1024, // 500 MB
       },
     }),
   )
@@ -89,7 +89,7 @@ export class Csv2GraphController {
    */
   @Post('suggest-transaction-id')
   @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: 200 * 1024 * 1024 } }),
+    FileInterceptor('file', { limits: { fileSize: 500 * 1024 * 1024 } }), // 500 MB
   )
   async suggestTransactionId(
     @UploadedFile() file: Express.Multer.File,

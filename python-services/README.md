@@ -77,10 +77,11 @@ python-services/models/fgnn_star.pt
 ```powershell
 cd python-services
 .\venv\Scripts\activate
-uvicorn gnn_service:app --host 127.0.0.1 --port 8001
+uvicorn csvtograph_sidecar:app --host 127.0.0.1 --port 8002
 ```
 
 Ket qua mong doi:
+
 ```
 [GNN] Starting - model: ...\models\fgnn_star.pt
 [GNN] Auto-detected in_dim=8 from weights
@@ -97,6 +98,7 @@ uvicorn pipeline:app --host 127.0.0.1 --port 8000
 ```
 
 Ket qua mong doi:
+
 ```
 [Pipeline] MOCK MODE - chua load Llama, dung rule-based classify
 INFO:     Uvicorn running on http://127.0.0.1:8000
@@ -134,11 +136,12 @@ curl -X POST http://127.0.0.1:8001/predict-fraud ^
 ```
 
 Response:
+
 ```json
 {
   "scores": [
-    {"tx_id": "T1", "fraud_score": 0.365285},
-    {"tx_id": "T2", "fraud_score": 0.523363}
+    { "tx_id": "T1", "fraud_score": 0.365285 },
+    { "tx_id": "T2", "fraud_score": 0.523363 }
   ],
   "gnnVersion": "v1.0-fgnn-star",
   "inferenceMs": 149
@@ -167,29 +170,29 @@ Mo trinh duyet: http://localhost:5173
 
 ## Thong so model F-GNN (da train)
 
-| Thong so | Gia tri |
-|---|---|
-| Architecture | F-GNN (Frequency-aware GNN) |
-| Graph topology | Star (hub nodes) |
-| in_dim | 8 (auto-detect tu weights) |
-| hidden_dim | 64 |
-| K (Chebyshev order) | 3 |
-| num_layers | 2 |
-| dropout | 0.4 |
-| num_classes | 2 (fraud / benign) |
-| Training epochs | 200 |
-| Weights file | models/fgnn_star.pt |
+| Thong so            | Gia tri                     |
+| ------------------- | --------------------------- |
+| Architecture        | F-GNN (Frequency-aware GNN) |
+| Graph topology      | Star (hub nodes)            |
+| in_dim              | 8 (auto-detect tu weights)  |
+| hidden_dim          | 64                          |
+| K (Chebyshev order) | 3                           |
+| num_layers          | 2                           |
+| dropout             | 0.4                         |
+| num_classes         | 2 (fraud / benign)          |
+| Training epochs     | 200                         |
+| Weights file        | models/fgnn_star.pt         |
 
 ## Bien moi truong (tuy chon)
 
-| Bien | Mac dinh | Mo ta |
-|---|---|---|
+| Bien             | Mac dinh                | Mo ta                  |
+| ---------------- | ----------------------- | ---------------------- |
 | `GNN_MODEL_PATH` | `./models/fgnn_star.pt` | Duong dan file weights |
-| `GNN_VERSION` | `v1.0-fgnn-star` | Version string |
-| `GNN_HIDDEN_DIM` | `64` | Hidden dimension |
-| `GNN_NUM_LAYERS` | `2` | So layer F-GNN |
-| `GNN_K` | `3` | Chebyshev filter order |
-| `GNN_DROPOUT` | `0.4` | Dropout rate |
+| `GNN_VERSION`    | `v1.0-fgnn-star`        | Version string         |
+| `GNN_HIDDEN_DIM` | `64`                    | Hidden dimension       |
+| `GNN_NUM_LAYERS` | `2`                     | So layer F-GNN         |
+| `GNN_K`          | `3`                     | Chebyshev filter order |
+| `GNN_DROPOUT`    | `0.4`                   | Dropout rate           |
 
 ## Trang thai
 

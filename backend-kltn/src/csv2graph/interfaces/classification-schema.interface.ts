@@ -13,10 +13,17 @@ export interface FullSchema {
    */
   feature_cols: string[];
   /**
-   * ENCODED feature column names sau one-hot + cast float.
+   * ENCODED feature column names sau Target/Frequency Encoding.
+   * Số lượng cột bằng feature_cols.length (không phình chiều như one-hot).
    * Dùng cho preprocessed.csv → data.pt (sidecar build PyG x tensor).
    */
   encoded_feature_cols: string[];
+  /**
+   * Target Encoding maps cho từng categorical column.
+   * Cấu trúc: { [colName]: { [categoryValue]: encodedFloat, '__MISSING__': globalMean } }
+   * Dùng để sidecar Python tái hiện encoding khi inference mà không cần raw data.
+   */
+  encoding_maps: Record<string, Record<string, number>>;
   target_label: string;
   train_ratio: number;
   val_ratio: number;

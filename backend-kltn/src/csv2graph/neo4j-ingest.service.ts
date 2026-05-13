@@ -18,8 +18,24 @@ import {
  *   (:Transaction)-[:HAS_MERCHANT]->(:MerchantNode {value: "amazon"})
  *   (:Transaction)-[:HAS_CATEGORY]->(:CategoryNode {value: "shopping"})
  *
- * Không dùng APOC. Không dùng SAME_RELATION.
- * Đây là heterogeneous graph — phân biệt rõ Transaction node và Auxiliary node.
+ * ─── Tối ưu hiệu năng (so với bản cũ) ───────────────────────────────────────
+ *
+ *  1. CONSTRAINT + INDEX trước khi ingest
+ *     Tạo UNIQUE CONSTRAINT trên node_id cho Transaction và value cho Aux nodes.
+ *     Neo4j bắt buộc đánh index trước khi MERGE → MERGE tra cứu O(1) thay vì O(N).
+ *
+ *  2. CREATE thay MERGE cho Full Build (DB rỗng)
+ *     MERGE = lookup + create (2 ops). CREATE = 1 op.
+ *     Khi DB đang rỗng (full build) → dùng CREATE trực tiếp.
+ *     Append mode vẫn dùng MERGE (upsert an toàn).
+ *
+ *  3. executeWrite() — tự động retry + explicit transaction
+ *     Neo4j driver quản lý transaction scope rõ ràng + tự retry khi leader failover.
+ *     Tốt hơn session.run() (implicit auto-commit) về throughput.
+ *
+ *  4. Batch size lớn hơn: nodes 50k, edges 20k (cũ: 5k / 10k)
+ *     Giảm số roundtrip TCP + số lần commit transaction.
+ *     Có thể điều chỉnh qua env CSV2GRAPH_NODE_BATCH_SIZE / CSV2GRAPH_EDGE_BATCH_SIZE.
  *
  * NOTE: data.pt (dùng cho GNN training) vẫn dùng homogeneous star topology riêng biệt.
  * Hai luồng này hoàn toàn độc lập.
@@ -40,6 +56,7 @@ export class Neo4jIngestService {
     featureCols: string[],
     targetLabel: string,
     nodeLabel: string,
+    isAppend: boolean = false,
   ): Promise<{ nodes: number; relationships: number }> {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nodeLabel)) {
       throw new HttpException(
@@ -49,11 +66,14 @@ export class Neo4jIngestService {
     }
 
     const nodeBatchSize = Number(
-      this.config.get<string>('CSV2GRAPH_NODE_BATCH_SIZE') ?? 5000,
+      this.config.get<string>('CSV2GRAPH_NODE_BATCH_SIZE') ?? 50000,
     );
     const edgeBatchSize = Number(
-      this.config.get<string>('CSV2GRAPH_EDGE_BATCH_SIZE') ?? 10000,
+      this.config.get<string>('CSV2GRAPH_EDGE_BATCH_SIZE') ?? 20000,
     );
+
+    // Bước 0: Đảm bảo index / constraint tồn tại (idempotent)
+    await this.ensureConstraints(nodeLabel, edges);
 
     // Bước 1: Ingest transaction nodes
     const ingestedNodes = await this.ingestTransactionNodes(
@@ -63,6 +83,7 @@ export class Neo4jIngestService {
       targetLabel,
       nodeLabel,
       nodeBatchSize,
+      isAppend,
     );
 
     // Bước 2: Ingest auxiliary nodes + relationships (heterogeneous)
@@ -72,18 +93,69 @@ export class Neo4jIngestService {
       nodeIdCol,
       nodeLabel,
       edgeBatchSize,
+      isAppend,
     );
 
     return { nodes: ingestedNodes, relationships: ingestedRels };
   }
 
   // ============================================================
-  // PRIVATE — Transaction Nodes
+  // STEP 0 — Constraints & Indexes
   // ============================================================
 
   /**
-   * MERGE transaction nodes vào Neo4j.
-   * Mỗi row là một node với node_id + feature props + target_label.
+   * Tạo UNIQUE CONSTRAINT cho Transaction.node_id và mỗi AuxNode.value.
+   * Neo4j tự động tạo backing index khi constraint được tạo.
+   * Dùng IF NOT EXISTS (idempotent — chạy nhiều lần không lỗi).
+   *
+   * Tại sao quan trọng:
+   *   MERGE (n:Transaction {node_id: x}) không có index → full node scan O(N).
+   *   Với index → O(1) lookup. Với 1M nodes, khác biệt là hàng chục phút.
+   */
+  private async ensureConstraints(
+    nodeLabel: string,
+    edges: EdgeRow[],
+  ): Promise<void> {
+    const session = this.neo4jService.getWriteSession();
+    try {
+      // Constraint cho Transaction node
+      const txConstraint = `constraint_${nodeLabel.toLowerCase()}_node_id`;
+      await session.run(
+        `CREATE CONSTRAINT ${txConstraint} IF NOT EXISTS
+         FOR (n:${nodeLabel}) REQUIRE n.node_id IS UNIQUE`,
+      );
+      this.logger.log(`  [idx] UNIQUE constraint on :${nodeLabel}(node_id) — OK`);
+
+      // Constraints cho mỗi loại Auxiliary node
+      const relTypes = [...new Set(edges.map((e) => String(e.relation_type)))];
+      for (const relType of relTypes) {
+        const auxLabel = this.toAuxNodeLabel(relType);
+        const auxConstraint = `constraint_${auxLabel.toLowerCase()}_value`;
+        await session.run(
+          `CREATE CONSTRAINT ${auxConstraint} IF NOT EXISTS
+           FOR (n:${auxLabel}) REQUIRE n.value IS UNIQUE`,
+        );
+        this.logger.log(`  [idx] UNIQUE constraint on :${auxLabel}(value) — OK`);
+      }
+    } catch (err: any) {
+      // Log cảnh báo nhưng không fail — constraint có thể đã tồn tại với tên khác
+      this.logger.warn(`  [idx] Constraint creation warning (non-fatal): ${err?.message}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ============================================================
+  // STEP 1 — Transaction Nodes
+  // ============================================================
+
+  /**
+   * Ingest transaction nodes vào Neo4j.
+   *
+   * Full Build (isAppend=false): dùng CREATE — nhanh hơn MERGE vì không cần lookup.
+   * Append Build (isAppend=true): dùng MERGE — upsert an toàn, tránh duplicate.
+   *
+   * Dùng executeWrite() để có explicit managed transaction thay vì auto-commit.
    */
   private async ingestTransactionNodes(
     rows: CsvRow[],
@@ -92,18 +164,25 @@ export class Neo4jIngestService {
     targetLabel: string,
     nodeLabel: string,
     batchSize: number,
+    isAppend: boolean,
   ): Promise<number> {
     if (rows.length === 0) return 0;
 
+    // Full build → CREATE (không cần lookup, DB đang rỗng)
+    // Append   → MERGE  (upsert: update nếu đã có, create nếu chưa có)
+    const cypher = isAppend
+      ? `UNWIND $batch AS row
+         MERGE (n:${nodeLabel} {node_id: row.node_id})
+         SET n += row.props`
+      : `UNWIND $batch AS row
+         CREATE (n:${nodeLabel})
+         SET n.node_id = row.node_id, n += row.props`;
+
     const session = this.neo4jService.getWriteSession();
     let total = 0;
-    try {
-      const cypher = `
-        UNWIND $batch AS row
-        MERGE (n:${nodeLabel} {node_id: row.node_id})
-        SET n += row.props
-      `;
+    const startTime = Date.now();
 
+    try {
       for (let i = 0; i < rows.length; i += batchSize) {
         const slice = rows.slice(i, i + batchSize);
         const batch = slice.map((r) => {
@@ -111,22 +190,34 @@ export class Neo4jIngestService {
           for (const c of featureCols) {
             if (c in r) props[c] = r[c];
           }
-          if (targetLabel in r) props[targetLabel] = r[targetLabel];
-          return { node_id: r[nodeIdCol], props };
+          if (targetLabel && targetLabel in r) props[targetLabel] = r[targetLabel];
+          return { node_id: String(r[nodeIdCol]), props };
         });
-        await session.run(cypher, { batch });
+
+        await session.executeWrite((tx) => tx.run(cypher, { batch }));
+
         total += slice.length;
-        this.logger.log(`  -> transaction nodes: ${total}/${rows.length}`);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const rate = Math.round(total / ((Date.now() - startTime) / 1000));
+        this.logger.log(
+          `  -> nodes: ${total}/${rows.length}` +
+          ` | ${elapsed}s | ~${rate.toLocaleString()} nodes/s`,
+        );
       }
     } finally {
       await session.close();
     }
 
+    const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
+    this.logger.log(
+      `  [nodes done] ${total.toLocaleString()} nodes in ${totalSec}s` +
+      ` (${isAppend ? 'MERGE' : 'CREATE'})`,
+    );
     return total;
   }
 
   // ============================================================
-  // PRIVATE — Heterogeneous Edges + Auxiliary Nodes
+  // STEP 2 — Heterogeneous Edges + Auxiliary Nodes
   // ============================================================
 
   /**
@@ -137,10 +228,7 @@ export class Neo4jIngestService {
    *   2. MERGE auxiliary node: (:MerchantNode {value: dst_id})
    *   3. MERGE edge: (:Transaction {node_id: src_id})-[:HAS_MERCHANT]->(:MerchantNode {value: dst_id})
    *
-   * Lý do:
-   *   - Tránh lỗi SAME_RELATION (không cần APOC, không dùng dynamic rel type)
-   *   - Heterogeneous graph rõ ràng, dễ query trong Neo4j Browser
-   *   - Mỗi auxiliary entity (Merchant, Category...) là node riêng biệt
+   * Auxiliary nodes và edges luôn dùng MERGE (tập unique values nhỏ, cần idempotent).
    */
   private async ingestHeterogeneousEdges(
     edges: EdgeRow[],
@@ -148,6 +236,7 @@ export class Neo4jIngestService {
     nodeIdCol: string,
     nodeLabel: string,
     batchSize: number,
+    isAppend: boolean,
   ): Promise<number> {
     if (edges.length === 0) return 0;
 
@@ -162,44 +251,48 @@ export class Neo4jIngestService {
     let totalRels = 0;
 
     for (const [relType, relEdges] of groupedByType) {
-      // Tính auxiliary node label và relationship type
-      const auxLabel = this.toAuxNodeLabel(relType);   // vd: "MerchantNode"
+      const auxLabel = this.toAuxNodeLabel(relType);
       const relTypeName = `HAS_${relType.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
 
       this.logger.log(
-        `  -> Ingesting ${relEdges.length} edges: ` +
+        `  -> Ingesting ${relEdges.length.toLocaleString()} edges: ` +
         `(:${nodeLabel})-[:${relTypeName}]->(:${auxLabel})`,
       );
 
-      // Bước 1: MERGE auxiliary nodes (unique values)
+      // Bước 2a: MERGE auxiliary nodes (unique values — tập nhỏ)
       const uniqueValues = [...new Set(relEdges.map((e) => String(e.dst_id)))];
       await this.mergeAuxiliaryNodes(auxLabel, uniqueValues, batchSize);
 
-      // Bước 2: MERGE relationships Transaction → AuxiliaryNode
-      const session = this.neo4jService.getWriteSession();
-      try {
-        const cypher = `
-          UNWIND $batch AS r
-          MATCH (src:${nodeLabel} {node_id: r.src_id})
-          MATCH (dst:${auxLabel} {value: r.dst_id})
-          MERGE (src)-[:${relTypeName}]->(dst)
-        `;
+      // Bước 2b: MERGE relationships Transaction → AuxiliaryNode
+      // Dùng MERGE luôn vì rel có thể bị duplicate khi append
+      const relCypher = `
+        UNWIND $batch AS r
+        MATCH (src:${nodeLabel} {node_id: r.src_id})
+        MATCH (dst:${auxLabel} {value: r.dst_id})
+        MERGE (src)-[:${relTypeName}]->(dst)
+      `;
 
+      const relSession = this.neo4jService.getWriteSession();
+      const relStart = Date.now();
+      try {
         for (let i = 0; i < relEdges.length; i += batchSize) {
           const slice = relEdges.slice(i, i + batchSize);
           const batch = slice.map((e) => ({
             src_id: String(e.src_id),
             dst_id: String(e.dst_id),
           }));
-          await session.run(cypher, { batch });
+          await relSession.executeWrite((tx) => tx.run(relCypher, { batch }));
           totalRels += slice.length;
           this.logger.log(
-            `  -> [${relTypeName}] edges: ${Math.min(i + batchSize, relEdges.length)}/${relEdges.length}`,
+            `  -> [${relTypeName}] ${Math.min(i + batchSize, relEdges.length)}/${relEdges.length}`,
           );
         }
       } finally {
-        await session.close();
+        await relSession.close();
       }
+
+      const relSec = ((Date.now() - relStart) / 1000).toFixed(1);
+      this.logger.log(`  [${relTypeName} done] in ${relSec}s`);
     }
 
     return totalRels;
@@ -207,7 +300,7 @@ export class Neo4jIngestService {
 
   /**
    * MERGE auxiliary nodes (giá trị unique của relation col).
-   * Ví dụ: MERGE (:MerchantNode {value: "amazon"})
+   * Tập này thường nhỏ (vài nghìn merchants, categories...) → MERGE OK.
    */
   private async mergeAuxiliaryNodes(
     auxLabel: string,
@@ -217,17 +310,16 @@ export class Neo4jIngestService {
     if (values.length === 0) return;
 
     const session = this.neo4jService.getWriteSession();
+    const cypher = `
+      UNWIND $batch AS v
+      MERGE (:${auxLabel} {value: v})
+    `;
     try {
-      const cypher = `
-        UNWIND $batch AS v
-        MERGE (:${auxLabel} {value: v})
-      `;
-
       for (let i = 0; i < values.length; i += batchSize) {
         const slice = values.slice(i, i + batchSize);
-        await session.run(cypher, { batch: slice });
+        await session.executeWrite((tx) => tx.run(cypher, { batch: slice }));
         this.logger.log(
-          `  -> auxiliary (:${auxLabel}): ${Math.min(i + batchSize, values.length)}/${values.length}`,
+          `  -> aux (:${auxLabel}): ${Math.min(i + batchSize, values.length)}/${values.length}`,
         );
       }
     } finally {

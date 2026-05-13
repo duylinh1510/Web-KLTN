@@ -87,13 +87,8 @@ export class Csv2GraphService {
   ): Promise<Csv2GraphResult> {
     const trainMode = dto.trainMode ?? false; // Default: chỉ ingest, không train
 
-    // targetLabel bắt buộc CHỈ khi train model
-    if (trainMode && (!dto.targetLabel || dto.targetLabel.trim() === '')) {
-      throw new HttpException(
-        'targetLabel là bắt buộc khi chọn train model.',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+    // targetLabel bắt buộc khi muốn build data.pt (cần nhãn cho GNN)
+    // trainMode vẫn giữ nhưng không gate data.pt nữa — data.pt luôn cần có
     const targetLabel = dto.targetLabel?.trim() ?? '';
     const jobId = this.makeJobId(originalFileName);
     const outputRoot =
@@ -186,10 +181,11 @@ export class Csv2GraphService {
     }
 
 
-    this.logger.log('[4/8] Preprocess features (one-hot + float) — encoded copy...');
-    const { encodedRows, encodedFeatureCols } = this.feature.preprocessFeatures(
+    this.logger.log('[4/8] Preprocess features (Target Encoding + float) — encoded copy...');
+    const { encodedRows, encodedFeatureCols, encodingMaps } = this.feature.preprocessFeatures(
       rawRows,
       classification.feature,
+      targetLabel,
     );
 
     this.logger.log('[5/8] Build star edges (raw rows, raw relation_cols)...');
@@ -208,7 +204,8 @@ export class Csv2GraphService {
       relation_cols: classification.relation_cols,
       feature_cols: rawFeatureCols,
       encoded_feature_cols: encodedFeatureCols,
-      target_label: targetLabel,  // '' khi ingest-only
+      encoding_maps: encodingMaps,        // Target/Frequency Encoding maps
+      target_label: targetLabel,  // '' ki ingest-only
       train_ratio: trainRatio,
       val_ratio: valRatio,
       seed,
@@ -242,7 +239,7 @@ export class Csv2GraphService {
     };
 
     if (ingestNeo4j) {
-      this.logger.log('[7/8] Ingest Neo4j (raw rows, raw feature props)...');
+      this.logger.log('[7/8] Ingest Neo4j (raw rows, raw feature props) — CREATE mode (full build)...');
       const ingested = await this.neo4jIngest.ingest(
         rawRows,
         edges,
@@ -250,6 +247,7 @@ export class Csv2GraphService {
         rawFeatureCols,
         targetLabel,
         nodeLabel,
+        false,  // isAppend=false → dùng CREATE (nhanh hơn MERGE khi DB rỗng)
       );
       stats.ingested = ingested;
       this.logger.log(
@@ -259,8 +257,11 @@ export class Csv2GraphService {
       this.logger.log('[7/8] Skip Neo4j ingestion (ingestNeo4j=false)');
     }
 
-    // ── Step 8: Build data.pt (chỉ khi trainMode=true) ──
-    if (trainMode && targetLabel) {
+    // ── Step 8: Build data.pt — luôn build khi có targetLabel ──
+    // GNN service cần data.pt bất kể có train ngay hay không.
+    // trainMode chỉ kiểm soát luồng training thực sự (sau này),
+    // không phải việc chuẩn bị cấu trúc dữ liệu.
+    if (targetLabel) {
       this.logger.log('[8/8] Build data.pt via Python sidecar (encoded rows)...');
       const preCsvPath = this.csvOutput.writePreprocessedCsv(
         jobDir,
@@ -274,7 +275,7 @@ export class Csv2GraphService {
       const { dataPtPath } = await this.dataPt.buildDataPt(jobDir);
       files.dataPt = dataPtPath;
     } else {
-      this.logger.log('[8/8] Skip data.pt build (trainMode=false — ingest only mode)');
+      this.logger.log('[8/8] Skip data.pt build (không có targetLabel — ingest-only mode)');
     }
 
     if (ingestNeo4j) {
@@ -446,7 +447,7 @@ export class Csv2GraphService {
 
     // ── [6/6] Ingest Neo4j ──
     if (ingestNeo4j) {
-      this.logger.log('[6/6] Ingest Neo4j (MERGE upsert by node_id)...');
+      this.logger.log('[6/6] Ingest Neo4j (MERGE upsert by node_id) — APPEND mode...');
       const ingested = await this.neo4jIngest.ingest(
         rawRows,
         edges,
@@ -454,6 +455,7 @@ export class Csv2GraphService {
         rawFeatureCols,
         meta.targetLabel,
         nodeLabel,
+        true,   // isAppend=true → dùng MERGE (upsert an toàn)
       );
       stats.ingested = ingested;
       this.logger.log(

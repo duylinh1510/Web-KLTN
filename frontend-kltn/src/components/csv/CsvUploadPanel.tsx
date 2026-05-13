@@ -50,8 +50,9 @@ export function CsvUploadPanel() {
   const [llmSuggestion, setLlmSuggestion] = useState<string | null>(null);
   const [isSuggesting, setIsSuggesting] = useState(false);
 
-  // ── Train model (tùy chọn, không bắt buộc) ──
+  // Train model checkbox — tùy chọn, không ảnh hưởng đến việc build data.pt
   const [trainModel, setTrainModel] = useState(false);
+  // Target label — luôn gửi khi full build, dùng cho data.pt + GNN
   const [targetLabel, setTargetLabel] = useState("");
 
   // ── Khi file thay đổi (full build) → reset + gọi LLM suggest ──
@@ -87,22 +88,16 @@ export function CsvUploadPanel() {
     if (!file) return null;
 
     if (!hasData) {
-      // Full build: targetLabel chỉ bắt buộc khi tick Train
-      if (trainModel && !targetLabel.trim()) {
-        return "Vui lòng chọn cột Target Feature khi train model.";
+      // Full build: targetLabel bắt buộc — cần cho data.pt + GNN
+      if (!targetLabel.trim()) {
+        return "Vui lòng chọn cột Target Feature (ví dụ: is_fraud).";
       }
-      if (
-        trainModel &&
-        targetLabel &&
-        headers.length > 0 &&
-        !headers.includes(targetLabel)
-      ) {
+      if (headers.length > 0 && !headers.includes(targetLabel)) {
         return `Cột '${targetLabel}' không có trong CSV.`;
       }
     }
-    // Append mode: không validate cột ở FE — backend kiểm tra qua _raw_.json
     return null;
-  }, [file, hasData, trainModel, targetLabel, headers]);
+  }, [file, hasData, targetLabel, headers]);
 
   const canBuild =
     isConnected && !!file && !isPending && !isSuggesting && !validationError;
@@ -112,16 +107,14 @@ export function CsvUploadPanel() {
     if (!file) return;
     build({
       file,
-      targetLabel: hasData
-        ? undefined
-        : trainModel
-          ? targetLabel.trim()
-          : undefined,
+      // targetLabel luôn gửi nếu đã chọn — data.pt được build ở BE khi có targetLabel
+      targetLabel: hasData ? undefined : targetLabel.trim() || undefined,
       nodeLabel: hasData
         ? (datasetNodeLabel ?? undefined)
         : nodeLabel.trim() || undefined,
       transactionIdCol:
         !hasData && txnIdCol !== AUTO_GENERATE_OPTION ? txnIdCol : undefined,
+      // trainMode gửi đú như checkbox — độc lập với việc build data.pt
       trainMode: !hasData ? trainModel : undefined,
     });
   };
@@ -237,74 +230,65 @@ export function CsvUploadPanel() {
             )}
           </div>
 
-          {/* ── Train Model Checkbox (TÙY CHỌN) ── */}
-          <div className="rounded border border-slate-700/40 bg-slate-900/50 p-2.5 space-y-2.5">
-            <div>
-              <label className="flex cursor-pointer items-center gap-2 select-none">
-                <input
-                  type="checkbox"
-                  id="train-model-checkbox"
-                  checked={trainModel}
-                  onChange={(e) => {
-                    setTrainModel(e.target.checked);
-                    if (!e.target.checked) setTargetLabel("");
-                  }}
-                  disabled={isPending}
-                  className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-emerald-500"
-                />
-                <span className="text-[11px] font-medium text-slate-200">
-                  Train model phát hiện gian lận
-                </span>
-              </label>
-              <div className="mt-1 ml-5.5 text-[10px] text-slate-500 leading-relaxed">
-                {trainModel
-                  ? "✓ Sẽ build data.pt — khi upload data mới sẽ chạy inference fraud tự động."
-                  : "Nếu không train: chỉ ingest vào Neo4j. Text2Cypher vẫn dùng được bình thường."}
-              </div>
-            </div>
-
-            {/* Target Feature — chỉ hiện khi tick train */}
-            {trainModel && (
-              <div>
-                <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                  Target Feature (cột nhãn 0/1){" "}
-                  <span className="text-red-400">*</span>
-                </label>
-                {headers.length > 0 ? (
-                  <select
-                    id="target-feature-select"
-                    value={targetLabel}
-                    onChange={(e) => setTargetLabel(e.target.value)}
-                    disabled={isPending}
-                    className={selectCls()}
-                  >
-                    <option value="">-- Chọn cột target --</option>
-                    {headers
-                      .filter(
-                        (h) =>
-                          txnIdCol === AUTO_GENERATE_OPTION || h !== txnIdCol,
-                      )
-                      .map((h) => (
-                        <option key={h} value={h}>
-                          {h}
-                        </option>
-                      ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={targetLabel}
-                    onChange={(e) => setTargetLabel(e.target.value)}
-                    disabled={isPending}
-                    placeholder="VD: is_fraud"
-                    className={inputCls()}
-                  />
-                )}
-                <div className="mt-0.5 text-[10px] text-slate-500">
-                  Cột nhị phân (0 = bình thường, 1 = gian lận).
-                </div>
-              </div>
+          {/* Target Feature — luôn hiển thị, độc lập với trainModel */}
+          <div>
+            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">
+              Target Feature (cột nhãn 0/1){" "}
+              <span className="text-red-400">*</span>
+            </label>
+            {headers.length > 0 ? (
+              <select
+                id="target-feature-select"
+                value={targetLabel}
+                onChange={(e) => setTargetLabel(e.target.value)}
+                disabled={isPending}
+                className={selectCls()}
+              >
+                <option value="">-- Chọn cột target (ví dụ: is_fraud) --</option>
+                {headers
+                  .filter(
+                    (h) =>
+                      txnIdCol === AUTO_GENERATE_OPTION || h !== txnIdCol,
+                  )
+                  .map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={targetLabel}
+                onChange={(e) => setTargetLabel(e.target.value)}
+                disabled={isPending}
+                placeholder="Ví dụ: is_fraud"
+                className={inputCls()}
+              />
             )}
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              Cột nhị phân (0 = bình thường, 1 = gian lận). Dùng để build data.pt cho GNN.
+            </div>
+          </div>
+
+          {/* Train Model Checkbox — tùy chọn, không ảnh hưởng đến data.pt */}
+          <div className="rounded border border-slate-700/40 bg-slate-900/50 p-2.5">
+            <label className="flex cursor-pointer items-center gap-2 select-none">
+              <input
+                type="checkbox"
+                id="train-model-checkbox"
+                checked={trainModel}
+                onChange={(e) => setTrainModel(e.target.checked)}
+                disabled={isPending}
+                className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-emerald-500"
+              />
+              <span className="text-[11px] font-medium text-slate-200">
+                Đánh dấu để train model sau khi build
+              </span>
+            </label>
+            <div className="mt-1 ml-5.5 text-[10px] text-slate-500 leading-relaxed">
+              data.pt luôn được tạo khi có Target Feature. Checkbox này chỉ lưu trạng thái cho bước train sau.
+            </div>
           </div>
         </div>
       )}
