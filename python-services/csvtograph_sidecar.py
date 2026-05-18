@@ -14,19 +14,22 @@ csvtograph/graph_utils.py.
 
 Run:
     cd python-services
-    uvicorn csvtograph_sidecar:app --host 127.0.0.1 --port 8001
+    uvicorn csvtograph_sidecar:app --host 127.0.0.1 --port 8002
 """
 
 import json
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
 from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 FILE_DIR = Path(__file__).resolve().parent
@@ -37,6 +40,7 @@ from csvtograph.graph_utils import (
     _extract_labels,
     add_splits,
 )
+from fraud_model.train import train_fgnn
 
 
 # ============================================================
@@ -45,7 +49,7 @@ from csvtograph.graph_utils import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[csv2graph-sidecar] Service started on 127.0.0.1:8001")
+    print("[csv2graph-sidecar] Service started on 127.0.0.1:8002")
     print(f"[csv2graph-sidecar] torch={torch.__version__}, cuda={torch.cuda.is_available()}")
     yield
     print("[csv2graph-sidecar] Shutdown.")
@@ -60,6 +64,7 @@ app = FastAPI(title="CSV2Graph Sidecar (data.pt builder)", lifespan=lifespan)
 
 class BuildDataPtRequest(BaseModel):
     jobDir: str
+    mode: str = "train"
 
 
 class BuildDataPtStats(BaseModel):
@@ -75,6 +80,14 @@ class BuildDataPtResponse(BaseModel):
     success: bool
     dataPt: str
     stats: BuildDataPtStats
+
+
+class TrainFgnnRequest(BaseModel):
+    jobDir: str
+    dataPt: str | None = None
+    savePath: str | None = None
+    activeModelPath: str | None = None
+    params: dict[str, Any] | None = None
 
 
 # ============================================================
@@ -171,6 +184,8 @@ async def build_data_pt(req: BuildDataPtRequest):
     train_ratio = float(schema.get("train_ratio", 0.4))
     val_ratio = float(schema.get("val_ratio", 0.2))
     seed = int(schema.get("seed", 42))
+    mode = (req.mode or "train").lower()
+    inference_mode = mode == "inference"
 
     if not target_label:
         raise HTTPException(400, "schema.json thiếu target_label")
@@ -186,7 +201,7 @@ async def build_data_pt(req: BuildDataPtRequest):
         raise HTTPException(
             400, f"node_id col '{node_id_col}' không có trong preprocessed.csv"
         )
-    if target_label not in df.columns:
+    if target_label not in df.columns and not inference_mode:
         raise HTTPException(
             400, f"target_label '{target_label}' không có trong preprocessed.csv"
         )
@@ -210,12 +225,22 @@ async def build_data_pt(req: BuildDataPtRequest):
 
     try:
         x = _extract_features(df, encoded_feature_cols, scale=True)
-        y = _extract_labels(df, target_label)
+        if inference_mode:
+            y = torch.zeros(len(df), dtype=torch.long)
+        else:
+            y = _extract_labels(df, target_label)
         edge_index = _build_edge_index_from_csv(edges_path, node_id_to_idx)
         data = Data(x=x, edge_index=edge_index, y=y)
-        data = add_splits(
-            data, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
-        )
+        if inference_mode:
+            data.node_ids = [str(nid) for nid in df[node_id_col].values]
+            n = data.num_nodes
+            data.train_mask = torch.zeros(n, dtype=torch.bool)
+            data.val_mask = torch.zeros(n, dtype=torch.bool)
+            data.test_mask = torch.ones(n, dtype=torch.bool)
+        else:
+            data = add_splits(
+                data, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
+            )
     except Exception as e:
         raise HTTPException(500, f"Build graph lỗi: {e}")
 
@@ -245,6 +270,45 @@ async def build_data_pt(req: BuildDataPtRequest):
         dataPt=str(data_pt_path),
         stats=stats,
     )
+
+
+@app.post("/train-fgnn")
+async def train_fgnn_endpoint(req: TrainFgnnRequest):
+    """
+    Train F-GNN synchronously for the uploaded dataset.
+
+    This endpoint is intentionally blocking because the web flow waits for
+    training to finish before returning /csv2graph/run.
+    """
+    job_dir = Path(req.jobDir)
+    if not job_dir.exists() or not job_dir.is_dir():
+        raise HTTPException(400, f"jobDir khong ton tai: {req.jobDir}")
+
+    data_pt = Path(req.dataPt) if req.dataPt else job_dir / "data.pt"
+    save_path = Path(req.savePath) if req.savePath else job_dir / "best_model.pt"
+    default_active = FILE_DIR / "models" / "fgnn_star.pt"
+    active_model_path = Path(
+        req.activeModelPath
+        or os.environ.get("GNN_ACTIVE_MODEL_PATH", str(default_active))
+    )
+
+    if not data_pt.exists():
+        raise HTTPException(400, f"data.pt khong ton tai: {data_pt}")
+
+    try:
+        result = await run_in_threadpool(
+            train_fgnn,
+            data_pt,
+            save_path,
+            active_model_path,
+            req.params or {},
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[train-fgnn] ERROR: {e}")
+        raise HTTPException(500, f"Train F-GNN loi: {e}")
 
 
 if __name__ == "__main__":

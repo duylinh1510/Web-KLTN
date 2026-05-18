@@ -74,9 +74,7 @@ export class SchemaLlmService {
 
     this.logger.log(`Schema classified:`);
     this.logger.log(`  node_id      : ${enforced.node_id}`);
-    this.logger.log(
-      `  relation_cols: [${enforced.relation_cols.join(', ')}]`,
-    );
+    this.logger.log(`  relation_cols: [${enforced.relation_cols.join(', ')}]`);
     this.logger.log(
       `  feature (${enforced.feature.length}) : [${enforced.feature.slice(0, 10).join(', ')}${enforced.feature.length > 10 ? ', ...' : ''}]`,
     );

@@ -25,8 +25,7 @@ const AUTO_GENERATE_OPTION = "__auto_generate__";
  *
  * ## Luồng khi DB đã có data (Append):
  *   - Nếu KHÔNG có model (hasModel=false) → chỉ ingest (MERGE upsert)
- *   - Nếu CÓ model (hasModel=true) → ingest + badge "Sẽ inference fraud"
- *     (inference thực sẽ implement ở Phase 5)
+ *   - Nếu có model/pretrained (hasModel=true) → inference fraud trước khi ingest
  */
 export function CsvUploadPanel() {
   const isConnected = useConnectionStore((s) => s.isConnected);
@@ -101,6 +100,7 @@ export function CsvUploadPanel() {
 
   const canBuild =
     isConnected && !!file && !isPending && !isSuggesting && !validationError;
+  const showTrainingModal = isPending && !hasData && trainModel;
 
   // ── Build handler ──
   const handleBuild = () => {
@@ -131,6 +131,7 @@ export function CsvUploadPanel() {
   };
 
   return (
+    <>
     <div className="space-y-3">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
         CSV → Graph
@@ -142,7 +143,7 @@ export function CsvUploadPanel() {
       {hasData && hasModel && (
         <div className="flex items-center gap-1.5 rounded border border-emerald-800/60 bg-emerald-950/30 px-2.5 py-1.5 text-[11px] text-emerald-300">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block" />
-          Đã có model → Data mới sẽ được inference fraud
+          Đã có model/pretrained → Data mới sẽ được inference fraud
         </div>
       )}
       {hasData && !hasModel && (
@@ -350,10 +351,34 @@ export function CsvUploadPanel() {
         </div>
       )}
     </div>
+    {showTrainingModal && <TrainingModal />}
+    </>
   );
 }
 
 // ── Style helpers ──
+
+function TrainingModal() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-md border border-emerald-800/70 bg-slate-950 p-4 shadow-2xl shadow-emerald-950/40">
+        <div className="text-sm font-semibold text-slate-100">
+          Đang train model
+        </div>
+        <div className="mt-2 text-xs leading-relaxed text-slate-400">
+          Hệ thống đang build graph, tạo data.pt và train F-GNN. Quá trình này có thể mất vài phút.
+        </div>
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
+          <div className="h-full w-1/2 animate-pulse rounded-full bg-emerald-500" />
+        </div>
+        <div className="mt-3 flex items-center gap-2 text-[11px] text-emerald-300">
+          <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+          Đang xử lý training request...
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function inputCls() {
   return "w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 placeholder-slate-600 outline-none transition focus:border-emerald-600 disabled:cursor-not-allowed disabled:opacity-60";

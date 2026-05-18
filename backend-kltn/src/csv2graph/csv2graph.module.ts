@@ -11,6 +11,8 @@ import { CsvOutputService } from './csv-output.service';
 import { Neo4jIngestService } from './neo4j-ingest.service';
 import { DataPtService } from './data-pt.service';
 import { DatasetMetaService } from './dataset-meta.service';
+import { GnnTrainService } from './gnn-train.service';
+import { GnnInferenceService } from './gnn-inference.service';
 
 @Module({
   imports: [HttpModule, ConfigModule, Neo4jModule],
@@ -23,6 +25,8 @@ import { DatasetMetaService } from './dataset-meta.service';
     CsvOutputService,
     Neo4jIngestService,
     DataPtService,
+    GnnTrainService,
+    GnnInferenceService,
     DatasetMetaService,
   ],
   exports: [Csv2GraphService, DatasetMetaService],

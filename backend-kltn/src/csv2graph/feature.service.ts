@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CsvRow } from './interfaces/classification-schema.interface';
+import { CsvRow, FullSchema } from './interfaces/classification-schema.interface';
 
 /**
  * Tương đương ensure_node_id + preprocess_features ở pipeline.py.
@@ -169,6 +169,44 @@ export class FeatureService {
     }
 
     return { encodedRows, encodedFeatureCols: encodedCols, encodingMaps };
+  }
+
+  encodeWithSchema(
+    rows: CsvRow[],
+    schema: FullSchema,
+  ): {
+    encodedRows: CsvRow[];
+    encodedFeatureCols: string[];
+  } {
+    const encodedCols =
+      schema.encoded_feature_cols?.length > 0
+        ? schema.encoded_feature_cols
+        : schema.feature_cols;
+    const encodingMaps = schema.encoding_maps ?? {};
+    const encodedRows: CsvRow[] = new Array(rows.length);
+
+    for (let i = 0; i < rows.length; i++) {
+      const src = rows[i];
+      const dst: CsvRow = { ...src };
+
+      for (const col of encodedCols) {
+        const map = encodingMaps[col];
+        if (map) {
+          const raw = src[col];
+          const key =
+            raw === null || raw === undefined || raw === ''
+              ? '__MISSING__'
+              : String(raw);
+          dst[col] = map[key] ?? map['__MISSING__'] ?? 0.5;
+        } else {
+          dst[col] = this.boolToFloat(src[col]);
+        }
+      }
+
+      encodedRows[i] = dst;
+    }
+
+    return { encodedRows, encodedFeatureCols: encodedCols };
   }
 
   // ============================================================

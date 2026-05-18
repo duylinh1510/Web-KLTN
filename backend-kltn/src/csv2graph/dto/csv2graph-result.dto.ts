@@ -22,6 +22,35 @@ export interface Csv2GraphStats {
     nodes: number;
     relationships: number;
   };
+  inference?: {
+    total: number;
+    predictedFraud: number;
+    threshold: number;
+    inferenceMs?: number;
+  };
+}
+
+export interface Csv2GraphTrainingResult {
+  success: boolean;
+  modelPath: string;
+  activeModelPath: string;
+  epochsRun: number;
+  bestMetric: number | null;
+  threshold?: number | null;
+  metrics?: {
+    val?: Record<string, number | null>;
+    test?: Record<string, number | null>;
+  };
+}
+
+export interface Csv2GraphInferenceResult {
+  success: boolean;
+  dataPt: string;
+  total: number;
+  predictedFraud: number;
+  threshold: number;
+  gnnVersion?: string;
+  inferenceMs?: number;
 }
 
 export interface Csv2GraphResult {
@@ -33,4 +62,6 @@ export interface Csv2GraphResult {
   schema: FullSchema;
   stats: Csv2GraphStats;
   files: Csv2GraphFiles;
+  training?: Csv2GraphTrainingResult;
+  inference?: Csv2GraphInferenceResult;
 }

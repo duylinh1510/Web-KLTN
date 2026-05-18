@@ -145,6 +145,12 @@ export type Csv2GraphStats = {
   numEncodedFeatures: number;
   numRelationTypes: number;
   ingested?: { nodes: number; relationships: number };
+  inference?: {
+    total: number;
+    predictedFraud: number;
+    threshold: number;
+    inferenceMs?: number;
+  };
 };
 
 export type Csv2GraphFiles = {
@@ -156,6 +162,29 @@ export type Csv2GraphFiles = {
   dataPt?: string;
 };
 
+export type Csv2GraphTrainingResult = {
+  success: boolean;
+  modelPath: string;
+  activeModelPath: string;
+  epochsRun: number;
+  bestMetric: number | null;
+  threshold?: number | null;
+  metrics?: {
+    val?: Record<string, number | null>;
+    test?: Record<string, number | null>;
+  };
+};
+
+export type Csv2GraphInferenceResult = {
+  success: boolean;
+  dataPt: string;
+  total: number;
+  predictedFraud: number;
+  threshold: number;
+  gnnVersion?: string;
+  inferenceMs?: number;
+};
+
 export type Csv2GraphRunResponse = ApiSuccess<{
   jobId: string;
   mode: "full" | "append";
@@ -163,12 +192,23 @@ export type Csv2GraphRunResponse = ApiSuccess<{
   schema: Csv2GraphFullSchema;
   stats: Csv2GraphStats;
   files: Csv2GraphFiles;
+  training?: Csv2GraphTrainingResult;
+  inference?: Csv2GraphInferenceResult;
 }>;
 
 export type GraphPreviewResponse = ApiSuccess<{
   nodeLabel: string;
   graphData: GraphData;
   scalars: Scalar[];
+}>;
+
+export type SuggestedPrompt = {
+  label: string;
+  prompt: string;
+};
+
+export type SuggestedPromptsResponse = ApiSuccess<{
+  prompts: SuggestedPrompt[];
 }>;
 
 /** POST /csv2graph/suggest-transaction-id */

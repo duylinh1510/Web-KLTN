@@ -1,4 +1,7 @@
 # === GNN Service (port 8001) ===
+# F-GNN training uses PyG NeighborLoader. Install either pyg-lib or
+# torch-sparse wheels matching your Torch/CUDA version from:
+# https://data.pyg.org/whl/
 torch>=2.0.0
 torch-geometric>=2.5.0      # PyG — GNN framework (F-GNN, GraphSAGE, GAT, GCN)
 # torch-scatter, torch-sparse — cài riêng theo hướng dẫn PyG nếu cần

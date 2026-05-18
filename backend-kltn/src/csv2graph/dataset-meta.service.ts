@@ -16,8 +16,14 @@ export interface DatasetMeta {
   columns: string[];
   targetLabel: string;
   schema: FullSchema;
-  /** true = đã train model (data.pt tồn tại) */
+  /** true = user requested training during full build */
   trainMode?: boolean;
+  /** true = model training completed and a weights file exists */
+  hasModel?: boolean;
+  modelPath?: string;
+  activeModelPath?: string;
+  trainedAt?: string;
+  trainingMetrics?: Record<string, unknown>;
   builtAt: string;
 }
 
@@ -201,8 +207,12 @@ export class DatasetMetaService {
       targetLabel: meta.targetLabel,
       numNodes,
       jobId: meta.jobId,
-      hasModel: meta.trainMode === true,
+      hasModel: this.modelExists(meta),
     };
+  }
+
+  hasUsableModel(meta: DatasetMeta): boolean {
+    return this.modelExists(meta);
   }
 
   // ============================================================
@@ -227,5 +237,16 @@ export class DatasetMetaService {
 
   private sanitizeDbId(dbId: string): string {
     return dbId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  }
+
+  private modelExists(meta: DatasetMeta): boolean {
+    if (meta.hasModel !== true) return false;
+    const modelPath = meta.activeModelPath || meta.modelPath;
+    if (!modelPath) return false;
+    try {
+      return fs.existsSync(modelPath);
+    } catch {
+      return false;
+    }
   }
 }

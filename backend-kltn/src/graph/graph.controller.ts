@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Neo4jService } from '../neo4j/neo4j.service';
 import { Text2CypherService } from '../text2cypher/text2cypher.service';
+import { SchemaService } from '../text2cypher/schema.service';
 import { DatasetMetaService } from '../csv2graph/dataset-meta.service';
 import { formatRecords } from './graph.formatter';
 import { QueryDto } from './dto/query.dto';
@@ -17,6 +18,7 @@ export class GraphController {
   constructor(
     private readonly neo4jService: Neo4jService,
     private readonly text2CypherService: Text2CypherService,
+    private readonly schemaService: SchemaService,
     private readonly datasetMeta: DatasetMetaService,
   ) {}
 
@@ -124,5 +126,26 @@ export class GraphController {
     } finally {
       await session.close();
     }
+  }
+
+  @Get('suggested-prompts')
+  async suggestedPrompts() {
+    if (!this.neo4jService.getStatus().connected) {
+      throw new HttpException(
+        'Vui lòng kết nối Database trước!',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const dbId = this.neo4jService.getDbId();
+    const meta = this.datasetMeta.loadLatest(dbId);
+    if (!meta) {
+      throw new HttpException(
+        'Database rỗng, vui lòng upload CSV trước',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const prompts = await this.schemaService.getSuggestedFraudPrompts(dbId);
+    return { status: 'success', prompts };
   }
 }

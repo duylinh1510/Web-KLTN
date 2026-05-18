@@ -3,6 +3,11 @@ import { Neo4jService } from '../neo4j/neo4j.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
+export interface SuggestedPrompt {
+  label: string;
+  prompt: string;
+}
+
 @Injectable()
 export class SchemaService {
   // Đường dẫn folder cache schema
@@ -37,6 +42,11 @@ export class SchemaService {
     }
 
     return schema;
+  }
+
+  async getSuggestedFraudPrompts(dbId?: string | null): Promise<SuggestedPrompt[]> {
+    const schema = await this.getFullSchema(dbId);
+    return this.buildFraudPrompts(schema);
   }
 
   // ============================================================
@@ -186,6 +196,118 @@ export class SchemaService {
 
     // Filter schema chỉ giữ labels liên quan
     return this.filterSchemaString(fullSchema, mentionedLabels);
+  }
+
+  private buildFraudPrompts(schema: string): SuggestedPrompt[] {
+    const nodes = this.parseNodeProps(schema);
+    const rels = this.parseRelationships(schema);
+    const transactionNode =
+      nodes.find((n) => /transaction|payment|order/i.test(n.label)) ??
+      nodes[0] ?? { label: 'Transaction', props: [] };
+    const fraudProp =
+      this.findFraudProperty(transactionNode.props) ??
+      this.findFraudProperty(nodes.flatMap((n) => n.props)) ??
+      'is_fraud';
+    const outgoing = rels.filter((r) => r.from === transactionNode.label);
+    const firstRel = outgoing[0];
+    const secondRel = outgoing[1] ?? outgoing[0];
+
+    const prompts: SuggestedPrompt[] = [
+      {
+        label: 'Giao dịch fraud',
+        prompt: `Liệt kê 20 ${transactionNode.label} có ${fraudProp} = 1`,
+      },
+      {
+        label: 'Tỷ lệ fraud',
+        prompt: `Đếm số ${transactionNode.label} theo ${fraudProp}`,
+      },
+    ];
+
+    if (firstRel) {
+      prompts.push({
+        label: `Fraud theo ${this.humanizeLabel(firstRel.to)}`,
+        prompt:
+          `Tìm top 10 ${firstRel.to} liên quan đến nhiều ` +
+          `${transactionNode.label} fraud nhất qua quan hệ ${firstRel.rel}`,
+      });
+    }
+
+    if (secondRel) {
+      prompts.push({
+        label: 'Cụm nghi ngờ',
+        prompt:
+          `Tìm các ${transactionNode.label} fraud chia sẻ cùng ` +
+          `${this.humanizeLabel(secondRel.to)} với nhiều giao dịch khác`,
+      });
+    }
+
+    const numericProp =
+      transactionNode.props.find((p) => /amt|amount|money|price|value|score/i.test(p)) ??
+      transactionNode.props.find((p) => p !== fraudProp && p !== 'node_id');
+    if (numericProp) {
+      prompts.push({
+        label: `Fraud theo ${numericProp}`,
+        prompt:
+          `Thống kê ${numericProp} trung bình của ${transactionNode.label} ` +
+          `fraud và bình thường`,
+      });
+    }
+
+    prompts.push({
+      label: 'Mẫu quan hệ fraud',
+      prompt: `Vẽ graph các ${transactionNode.label} fraud và node liên quan, giới hạn 50 node`,
+    });
+
+    return prompts.slice(0, 6);
+  }
+
+  private parseNodeProps(schema: string): { label: string; props: string[] }[] {
+    const nodes: { label: string; props: string[] }[] = [];
+    let inNodeSection = false;
+    for (const line of schema.split('\n')) {
+      if (line.startsWith('Node properties:')) {
+        inNodeSection = true;
+        continue;
+      }
+      if (line.startsWith('Relationship properties:') || line.startsWith('Relationship structure:')) {
+        inNodeSection = false;
+        continue;
+      }
+      if (!inNodeSection || !line.startsWith('- ')) continue;
+
+      const match = line.match(/^- ([^{\s]+)\s*(?:\{(.*)\})?/);
+      if (!match) continue;
+      const propsRaw = match[2] ?? '';
+      const props = propsRaw
+        .split(',')
+        .map((part) => part.split(':')[0]?.trim())
+        .filter(Boolean);
+      nodes.push({ label: match[1], props });
+    }
+    return nodes;
+  }
+
+  private parseRelationships(schema: string): { from: string; rel: string; to: string }[] {
+    const rels: { from: string; rel: string; to: string }[] = [];
+    for (const line of schema.split('\n')) {
+      const match = line.match(/^- \(([^)]+)\)-\[:([^\]]+)\]->\(([^)]+)\)/);
+      if (match) {
+        rels.push({ from: match[1], rel: match[2], to: match[3] });
+      }
+    }
+    return rels;
+  }
+
+  private findFraudProperty(props: string[]): string | null {
+    return (
+      props.find((p) => /^is_?fraud$/i.test(p)) ??
+      props.find((p) => /fraud|risk|label|prediction|predicted/i.test(p)) ??
+      null
+    );
+  }
+
+  private humanizeLabel(label: string): string {
+    return label.replace(/Node$/i, '').replace(/([a-z])([A-Z])/g, '$1 $2');
   }
 
   // ============================================================

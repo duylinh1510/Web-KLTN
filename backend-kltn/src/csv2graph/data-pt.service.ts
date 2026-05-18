@@ -27,6 +27,8 @@ export interface BuildDataPtResult {
   stats: BuildDataPtStats;
 }
 
+export type BuildDataPtMode = 'train' | 'inference';
+
 @Injectable()
 export class DataPtService {
   private readonly logger = new Logger(DataPtService.name);
@@ -36,7 +38,10 @@ export class DataPtService {
     private readonly config: ConfigService,
   ) {}
 
-  async buildDataPt(jobDir: string): Promise<BuildDataPtResult> {
+  async buildDataPt(
+    jobDir: string,
+    mode: BuildDataPtMode = 'train',
+  ): Promise<BuildDataPtResult> {
     const baseUrl = this.getBaseUrl();
     const timeout = this.getTimeout();
 
@@ -48,7 +53,7 @@ export class DataPtService {
           success: boolean;
           dataPt: string;
           stats: BuildDataPtStats;
-        }>(`${baseUrl}/build-data-pt`, { jobDir }, { timeout }),
+        }>(`${baseUrl}/build-data-pt`, { jobDir, mode }, { timeout }),
       );
 
       if (!data?.success || !data.dataPt) {

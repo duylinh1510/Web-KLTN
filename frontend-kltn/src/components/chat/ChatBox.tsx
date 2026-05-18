@@ -3,6 +3,7 @@ import { useQueryGraph } from "../../hooks/useQueryGraph";
 import { useQueryStore } from "../../store/queryStore";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useDatasetStore } from "../../store/datasetStore";
+import { useSuggestedPrompts } from "../../hooks/useSuggestedPrompts";
 import { QueryStage } from "../../types";
 import { PresetPrompts } from "./PresetPrompts";
 import { LoadingRotator } from "./LoadingRotator";
@@ -14,7 +15,9 @@ export function ChatBox() {
   const stage = useQueryStore((s) => s.stage);
   const errorMessages = useQueryStore((s) => s.errorMessages);
   const isConnected = useConnectionStore((s) => s.isConnected);
+  const dbId = useConnectionStore((s) => s.dbId);
   const hasData = useDatasetStore((s) => s.hasData);
+  const suggestedPrompts = useSuggestedPrompts(isConnected && hasData, dbId);
 
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -48,8 +51,10 @@ export function ChatBox() {
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
       <PresetPrompts
+        prompts={suggestedPrompts.data?.prompts ?? []}
         onSelect={handleSelectPreset}
         disabled={disabled || isPending}
+        isLoading={suggestedPrompts.isLoading}
       />
 
       <div className="flex flex-col gap-2">

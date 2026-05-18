@@ -12,7 +12,7 @@ Luong inference:
 Run:  uvicorn gnn_service:app --host 127.0.0.1 --port 8001
 """
 
-import time, os
+import time, os, sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,11 +23,15 @@ from torch_geometric.data import Data
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from fgnn import FGNN
+FILE_DIR = Path(__file__).resolve().parent
+if str(FILE_DIR) not in sys.path:
+    sys.path.insert(0, str(FILE_DIR))
+
+from fraud_model.model import FGNN
 
 # -- CONFIG --
-MODEL_PATH = os.environ.get("GNN_MODEL_PATH", str(Path(__file__).parent / "models" / "fgnn_star.pt"))
-DATA_PATH = os.environ.get("GNN_DATA_PATH", str(Path(__file__).parent / "data" / "data.pt"))
+MODEL_PATH = os.environ.get("GNN_MODEL_PATH", str(FILE_DIR / "models" / "fgnn_star.pt"))
+DATA_PATH = os.environ.get("GNN_DATA_PATH", str(FILE_DIR / "data" / "data.pt"))
 GNN_VERSION = os.environ.get("GNN_VERSION", "v1.0-fgnn-star")
 
 # Hyperparams (phai khop voi luc train)
@@ -36,6 +40,11 @@ NUM_LAYERS = int(os.environ.get("GNN_NUM_LAYERS", "2"))
 K_ORDER = int(os.environ.get("GNN_K", "3"))
 DROPOUT = float(os.environ.get("GNN_DROPOUT", "0.4"))
 NUM_CLASSES = 2
+
+
+class PredictDataPtRequest(BaseModel):
+    dataPt: str
+    threshold: float | None = None
 
 # -- GLOBAL STATE --
 model: FGNN | None = None
@@ -50,6 +59,8 @@ def load_model():
 
     if not Path(MODEL_PATH).exists():
         print(f"[GNN] WARNING: model not found at {Path(MODEL_PATH).name}")
+        model = None
+        model_loaded = False
         return
 
     try:
@@ -81,6 +92,8 @@ def load_data():
 
     if not Path(DATA_PATH).exists():
         print(f"[GNN] WARNING: data.pt not found at {Path(DATA_PATH).name}")
+        graph_data = None
+        data_loaded = False
         return
 
     try:
@@ -167,6 +180,67 @@ def run_inference() -> dict:
     }
 
 
+def run_inference_for_data(data_path: str, threshold: float | None = None) -> dict:
+    if model is None:
+        raise RuntimeError("Model not loaded")
+
+    path = Path(data_path)
+    if not path.exists():
+        raise RuntimeError(f"data.pt not found: {path}")
+
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    expected_dim = model.input_proj.weight.shape[1]
+    actual_dim = int(data.x.shape[1])
+    if actual_dim != expected_dim:
+        raise RuntimeError(
+            f"Feature dimension mismatch: data has {actual_dim}, model expects {expected_dim}"
+        )
+
+    start = time.time()
+    model.eval()
+    with torch.no_grad():
+        logits = model(data, y_masked=None)
+        probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+
+    threshold = 0.5 if threshold is None else float(threshold)
+    node_ids = getattr(data, "node_ids", None)
+    if node_ids is None:
+        node_ids = [str(i) for i in range(data.num_nodes)]
+    else:
+        node_ids = [str(v) for v in node_ids]
+
+    scores = []
+    predicted_fraud = 0
+    for node_id, score in zip(node_ids, probs):
+        fraud_score = float(score)
+        predicted_label = 1 if fraud_score >= threshold else 0
+        predicted_fraud += predicted_label
+        scores.append(
+            {
+                "nodeId": node_id,
+                "fraudScore": round(fraud_score, 6),
+                "predictedLabel": predicted_label,
+            }
+        )
+
+    elapsed_ms = int((time.time() - start) * 1000)
+    print(
+        f"[GNN] Scored append data {len(scores)} nodes in {elapsed_ms}ms "
+        f"(predicted_fraud={predicted_fraud})"
+    )
+
+    return {
+        "success": True,
+        "dataPt": str(path),
+        "total": len(scores),
+        "predictedFraud": predicted_fraud,
+        "threshold": threshold,
+        "scores": scores,
+        "gnnVersion": GNN_VERSION,
+        "inferenceMs": elapsed_ms,
+    }
+
+
 # -- FASTAPI --
 
 @asynccontextmanager
@@ -205,6 +279,33 @@ async def predict_fraud():
     except Exception as e:
         print(f"[GNN] Inference error: {e}")
         raise HTTPException(500, f"Inference failed: {str(e)}")
+
+
+@app.post("/predict-data-pt")
+async def predict_data_pt(req: PredictDataPtRequest):
+    if not model_loaded:
+        raise HTTPException(503, "Model not loaded - check models/fgnn_star.pt")
+
+    try:
+        return run_inference_for_data(req.dataPt, req.threshold)
+    except Exception as e:
+        print(f"[GNN] Append inference error: {e}")
+        raise HTTPException(500, f"Inference failed: {str(e)}")
+
+
+@app.post("/reload")
+async def reload_model_and_data():
+    """Reload active model/data without restarting the service."""
+    load_model()
+    load_data()
+    return {
+        "status": "ok",
+        "modelLoaded": model_loaded,
+        "dataLoaded": data_loaded,
+        "modelPath": MODEL_PATH,
+        "dataPath": DATA_PATH,
+        "version": GNN_VERSION,
+    }
 
 
 @app.get("/data-info")

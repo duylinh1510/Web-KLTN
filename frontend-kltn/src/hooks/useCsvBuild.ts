@@ -6,6 +6,7 @@ import { runCsv2Graph } from "../api/endpoint";
 import { isAppApiError } from "../api/client";
 import { DATASET_INFO_QUERY_KEY } from "./useDatasetInfo";
 import { GRAPH_PREVIEW_QUERY_KEY } from "./useGraphPreview";
+import { SUGGESTED_PROMPTS_QUERY_KEY } from "./useSuggestedPrompts";
 import { useConnectionStore } from "../store/connectionStore";
 import type { Csv2GraphRunResponse } from "../types";
 
@@ -62,13 +63,20 @@ export function useCsvBuild() {
     onSuccess: (data) => {
       controllerRef.current = null;
       const modeLabel = data.mode === "full" ? "Build mới" : "Append";
+      const trainSuffix = data.training?.success
+        ? ` · train xong ${data.training.epochsRun} epochs`
+        : "";
+      const inferenceSuffix = data.inference?.success
+        ? ` · inference ${data.inference.predictedFraud}/${data.inference.total} fraud`
+        : "";
       toast.success(
-        `${modeLabel} xong: ${data.stats.numNodes} nodes, ${data.stats.numEdges} edges`,
+        `${modeLabel} xong: ${data.stats.numNodes} nodes, ${data.stats.numEdges} edges${trainSuffix}${inferenceSuffix}`,
       );
       // Invalidate với đúng key có dbId — trước đây dùng prefix không khớp
       // nên query không refetch sau khi build/append.
       qc.invalidateQueries({ queryKey: [...DATASET_INFO_QUERY_KEY, dbId] });
       qc.invalidateQueries({ queryKey: GRAPH_PREVIEW_QUERY_KEY });
+      qc.invalidateQueries({ queryKey: SUGGESTED_PROMPTS_QUERY_KEY });
     },
 
     onError: (error) => {

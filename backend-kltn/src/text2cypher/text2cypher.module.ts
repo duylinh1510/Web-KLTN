@@ -9,6 +9,6 @@ import { Csv2GraphModule } from '../csv2graph/csv2graph.module';
 @Module({
   imports: [HttpModule, ConfigModule, Neo4jModule, Csv2GraphModule],
   providers: [Text2CypherService, SchemaService],
-  exports: [Text2CypherService],
+  exports: [Text2CypherService, SchemaService],
 })
 export class Text2CypherModule {}

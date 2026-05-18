@@ -12,6 +12,7 @@ import type {
   Csv2GraphRunResponse,
   GraphPreviewResponse,
   SuggestTransactionIdResponse,
+  SuggestedPromptsResponse,
 } from "../types";
 
 /**
@@ -114,7 +115,7 @@ export async function runCsv2Graph(
     {
       signal,
       headers: { "Content-Type": "multipart/form-data" },
-      timeout: 600_000,
+      timeout: 3_600_000,
     },
   );
   return res.data;
@@ -127,6 +128,17 @@ export async function runCsv2Graph(
  */
 export async function getGraphPreview(): Promise<GraphPreviewResponse> {
   const res = await apiClient.get<GraphPreviewResponse>("/graph/preview");
+  return res.data;
+}
+
+/**
+ * GET /graph/suggested-prompts
+ * Sinh câu hỏi gợi ý từ schema_<dbId>.txt/cache schema hiện tại.
+ */
+export async function getSuggestedPrompts(): Promise<SuggestedPromptsResponse> {
+  const res = await apiClient.get<SuggestedPromptsResponse>(
+    "/graph/suggested-prompts",
+  );
   return res.data;
 }
 

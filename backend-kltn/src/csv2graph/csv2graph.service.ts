@@ -9,12 +9,16 @@ import { StarGraphService } from './star-graph.service';
 import { CsvOutputService } from './csv-output.service';
 import { Neo4jIngestService } from './neo4j-ingest.service';
 import { DataPtService } from './data-pt.service';
+import { GnnTrainService } from './gnn-train.service';
+import { GnnInferenceService } from './gnn-inference.service';
 import { DatasetMetaService, DatasetMeta, RawInfo } from './dataset-meta.service';
 import { Csv2GraphRunDto } from './dto/csv2graph-run.dto';
 import {
   Csv2GraphResult,
   Csv2GraphFiles,
   Csv2GraphStats,
+  Csv2GraphInferenceResult,
+  Csv2GraphTrainingResult,
 } from './dto/csv2graph-result.dto';
 import {
   CsvRow,
@@ -47,6 +51,8 @@ export class Csv2GraphService {
     private readonly csvOutput: CsvOutputService,
     private readonly neo4jIngest: Neo4jIngestService,
     private readonly dataPt: DataPtService,
+    private readonly gnnTrain: GnnTrainService,
+    private readonly gnnInference: GnnInferenceService,
     private readonly datasetMeta: DatasetMetaService,
   ) {}
 
@@ -90,6 +96,12 @@ export class Csv2GraphService {
     // targetLabel bắt buộc khi muốn build data.pt (cần nhãn cho GNN)
     // trainMode vẫn giữ nhưng không gate data.pt nữa — data.pt luôn cần có
     const targetLabel = dto.targetLabel?.trim() ?? '';
+    if (trainMode && !targetLabel) {
+      throw new HttpException(
+        'targetLabel là bắt buộc khi chọn train model.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const jobId = this.makeJobId(originalFileName);
     const outputRoot =
       this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
@@ -104,7 +116,6 @@ export class Csv2GraphService {
     const seed = dto.seed ?? 42;
     const nodeLabel = dto.nodeLabel ?? 'Transaction';
     const ingestNeo4j = dto.ingestNeo4j ?? true;
-
     this.logger.log(`====== JOB ${jobId} ======`);
     this.logger.log(`  target_label   : ${targetLabel || '(none — ingest only)'}`);
     this.logger.log(`  max_group_size : ${maxGroupSize}`);
@@ -124,8 +135,7 @@ export class Csv2GraphService {
     this.logger.log('[1/8] Parsing CSV...');
     const { rows, headers } = this.parseCsv(fileBuffer);
     this.assertNonEmpty(rows);
-    // Validate target column chỉ khi train
-    if (trainMode && targetLabel) {
+    if (targetLabel) {
       this.assertHeaderHasTarget(headers, targetLabel);
     }
     this.logger.log(`  parsed: ${rows.length} rows × ${headers.length} cols`);
@@ -238,8 +248,34 @@ export class Csv2GraphService {
       schemaJson: schemaJsonPath,
     };
 
+    let training: Csv2GraphTrainingResult | undefined;
+
+    // Step 7: Build data.pt before Neo4j import.
+    // If trainMode=true, training is a pre-ingest gate: any training error
+    // stops the request before neo4jIngest.ingest() is called.
+    if (targetLabel) {
+      this.logger.log('[7/8] Build data.pt via Python sidecar (encoded rows)...');
+      const preCsvPath = this.csvOutput.writePreprocessedCsv(
+        jobDir,
+        encodedRows,
+        ensured.nodeIdCol,
+        encodedFeatureCols,
+        targetLabel,
+      );
+      files.preprocessedCsv = preCsvPath;
+
+      const { dataPtPath } = await this.dataPt.buildDataPt(jobDir);
+      files.dataPt = dataPtPath;
+      if (trainMode) {
+        this.logger.log('[7.5/8] Train F-GNN before Neo4j import...');
+        training = await this.gnnTrain.train(jobDir, dataPtPath);
+      }
+    } else {
+      this.logger.log('[7/8] Skip data.pt build (khong co targetLabel - ingest-only mode)');
+    }
+
     if (ingestNeo4j) {
-      this.logger.log('[7/8] Ingest Neo4j (raw rows, raw feature props) — CREATE mode (full build)...');
+      this.logger.log('[8/8] Ingest Neo4j (raw rows, raw feature props) — CREATE mode (full build)...');
       const ingested = await this.neo4jIngest.ingest(
         rawRows,
         edges,
@@ -254,28 +290,7 @@ export class Csv2GraphService {
         `  ingested: ${ingested.nodes} nodes, ${ingested.relationships} relationships`,
       );
     } else {
-      this.logger.log('[7/8] Skip Neo4j ingestion (ingestNeo4j=false)');
-    }
-
-    // ── Step 8: Build data.pt — luôn build khi có targetLabel ──
-    // GNN service cần data.pt bất kể có train ngay hay không.
-    // trainMode chỉ kiểm soát luồng training thực sự (sau này),
-    // không phải việc chuẩn bị cấu trúc dữ liệu.
-    if (targetLabel) {
-      this.logger.log('[8/8] Build data.pt via Python sidecar (encoded rows)...');
-      const preCsvPath = this.csvOutput.writePreprocessedCsv(
-        jobDir,
-        encodedRows,
-        ensured.nodeIdCol,
-        encodedFeatureCols,
-        targetLabel,
-      );
-      files.preprocessedCsv = preCsvPath;
-
-      const { dataPtPath } = await this.dataPt.buildDataPt(jobDir);
-      files.dataPt = dataPtPath;
-    } else {
-      this.logger.log('[8/8] Skip data.pt build (không có targetLabel — ingest-only mode)');
+      this.logger.log('[8/8] Skip Neo4j ingestion (ingestNeo4j=false)');
     }
 
     if (ingestNeo4j) {
@@ -284,6 +299,11 @@ export class Csv2GraphService {
         ...rawFeatureCols,
         ...(targetLabel ? [targetLabel] : []),
       ];
+      const pretrainedModelPath =
+        !training && targetLabel && this.gnnTrain.hasActiveModel()
+          ? this.gnnTrain.getActiveModelPath()
+          : undefined;
+      const activeModelPath = training?.activeModelPath ?? pretrainedModelPath;
       this.datasetMeta.saveLatest(dbId, {
         jobId,
         nodeLabel,
@@ -291,12 +311,17 @@ export class Csv2GraphService {
         targetLabel: targetLabel || '',
         schema: fullSchema,
         trainMode,
+        hasModel: training?.success === true || !!pretrainedModelPath,
+        modelPath: training?.modelPath ?? pretrainedModelPath,
+        activeModelPath,
+        trainedAt: training ? new Date().toISOString() : undefined,
+        trainingMetrics: training?.metrics,
         builtAt: new Date().toISOString(),
       });
     }
 
     this.logger.log(`====== JOB ${jobId} DONE ======`);
-    return { jobId, schema: fullSchema, stats, files, mode: 'full' };
+    return { jobId, schema: fullSchema, stats, files, mode: 'full', training };
   }
 
   // ============================================================
@@ -322,6 +347,9 @@ export class Csv2GraphService {
       500;
     const nodeLabel = meta.nodeLabel; // Append luôn dùng nodeLabel đã lưu
     const ingestNeo4j = dto.ingestNeo4j ?? true;
+    const targetLabel = meta.targetLabel || meta.schema.target_label || '';
+    const canInferAppend =
+      !!targetLabel && this.datasetMeta.hasUsableModel(meta);
 
     this.logger.log(`====== APPEND JOB ${jobId} ======`);
     this.logger.log(`  canonical jobId  : ${meta.jobId}`);
@@ -337,6 +365,30 @@ export class Csv2GraphService {
     this.logger.log('[1/6] Parsing CSV...');
     let { rows, headers } = this.parseCsv(fileBuffer);
     this.assertNonEmpty(rows);
+    const targetHeaderPresent = !!targetLabel && headers.includes(targetLabel);
+    const targetValueCount = targetHeaderPresent
+      ? this.countPresentTargetValues(rows, targetLabel)
+      : 0;
+    const appendHasCompleteTarget =
+      targetHeaderPresent && targetValueCount === rows.length;
+    if (
+      targetHeaderPresent &&
+      targetValueCount > 0 &&
+      targetValueCount < rows.length
+    ) {
+      throw new HttpException(
+        `Cot target '${targetLabel}' chi co nhan o ${targetValueCount}/${rows.length} dong. ` +
+          `Hay dien du nhan, hoac bo cot nay de he thong inference.`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (targetHeaderPresent && targetValueCount === 0 && !canInferAppend) {
+      throw new HttpException(
+        `Cot target '${targetLabel}' khong co gia tri nhan va dataset chua co model de inference.`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const shouldInferAppend = canInferAppend && !appendHasCompleteTarget;
 
     // ── [2/6] Đọc _raw_<dbId>.json và validate columns ──
     this.logger.log('[2/6] Validate columns against _raw_ file...');
@@ -353,7 +405,13 @@ export class Csv2GraphService {
     const refSet = new Set(refColumns);
 
     // Cột THIẾU → lỗi
-    const missingCols = refColumns.filter((c) => !headers.includes(c));
+    const allowedMissingCols = new Set<string>();
+    if (shouldInferAppend && targetLabel) {
+      allowedMissingCols.add(targetLabel);
+    }
+    const missingCols = refColumns.filter(
+      (c) => !headers.includes(c) && !allowedMissingCols.has(c),
+    );
     if (missingCols.length > 0) {
       throw new HttpException(
         `CSV thiếu các cột bắt buộc: [${missingCols.join(', ')}]. ` +
@@ -424,7 +482,7 @@ export class Csv2GraphService {
       rawRows,
       ensured.nodeIdCol,
       rawFeatureCols,
-      meta.targetLabel || null,
+      targetLabel || null,
     );
     const edgesCsvPath = this.csvOutput.writeEdgesCsv(jobDir, edges);
     const schemaJsonPath = this.csvOutput.writeSchemaJson(jobDir, meta.schema);
@@ -445,6 +503,55 @@ export class Csv2GraphService {
       schemaJson: schemaJsonPath,
     };
 
+    let inference: Csv2GraphInferenceResult | undefined;
+    if (shouldInferAppend) {
+      this.logger.log('[5.5/6] Run F-GNN inference before Neo4j import...');
+      const { encodedRows, encodedFeatureCols } = this.feature.encodeWithSchema(
+        rawRows,
+        meta.schema,
+      );
+      files.preprocessedCsv = this.csvOutput.writePreprocessedCsv(
+        jobDir,
+        encodedRows,
+        ensured.nodeIdCol,
+        encodedFeatureCols,
+        targetLabel,
+      );
+
+      const { dataPtPath } = await this.dataPt.buildDataPt(jobDir, 'inference');
+      files.dataPt = dataPtPath;
+
+      const prediction = await this.gnnInference.predictDataPt(dataPtPath);
+      this.applyInferenceLabels(rawRows, prediction.scores, targetLabel);
+      this.csvOutput.writeNodesCsv(
+        jobDir,
+        rawRows,
+        ensured.nodeIdCol,
+        rawFeatureCols,
+        targetLabel,
+      );
+
+      stats.inference = {
+        total: prediction.total,
+        predictedFraud: prediction.predictedFraud,
+        threshold: prediction.threshold,
+        inferenceMs: prediction.inferenceMs,
+      };
+      inference = {
+        success: prediction.success,
+        dataPt: prediction.dataPt,
+        total: prediction.total,
+        predictedFraud: prediction.predictedFraud,
+        threshold: prediction.threshold,
+        gnnVersion: prediction.gnnVersion,
+        inferenceMs: prediction.inferenceMs,
+      };
+    } else if (appendHasCompleteTarget) {
+      this.logger.log('[5.5/6] Skip F-GNN inference (append CSV already has target labels)');
+    } else {
+      this.logger.log('[5.5/6] Skip F-GNN inference (no trained/pretrained model for this dataset)');
+    }
+
     // ── [6/6] Ingest Neo4j ──
     if (ingestNeo4j) {
       this.logger.log('[6/6] Ingest Neo4j (MERGE upsert by node_id) — APPEND mode...');
@@ -453,7 +560,7 @@ export class Csv2GraphService {
         edges,
         ensured.nodeIdCol,
         rawFeatureCols,
-        meta.targetLabel,
+        targetLabel,
         nodeLabel,
         true,   // isAppend=true → dùng MERGE (upsert an toàn)
       );
@@ -466,7 +573,7 @@ export class Csv2GraphService {
     }
 
     this.logger.log(
-      `====== APPEND JOB ${jobId} DONE — data.pt KHÔNG rebuild (giữ build đầu) ======`,
+      `====== APPEND JOB ${jobId} DONE ======`,
     );
 
     return {
@@ -476,12 +583,52 @@ export class Csv2GraphService {
       files,
       mode: 'append',
       canonicalJobId: meta.jobId,
+      inference,
     };
   }
 
   // ============================================================
   // PRIVATE
   // ============================================================
+
+  private applyInferenceLabels(
+    rows: CsvRow[],
+    scores: { nodeId: string; predictedLabel: number }[],
+    targetLabel: string,
+  ): void {
+    const byNodeId = new Map(
+      scores.map((s) => [String(s.nodeId), Number(s.predictedLabel)]),
+    );
+    let missing = 0;
+
+    for (const row of rows) {
+      const nodeId = String((row as Record<string, unknown>)['node_id'] ?? '');
+      const predicted = byNodeId.get(nodeId);
+      if (predicted === undefined) {
+        missing++;
+        continue;
+      }
+      row[targetLabel] = predicted === 1 ? 1 : 0;
+    }
+
+    if (missing > 0) {
+      throw new HttpException(
+        `Inference khong tra du nhan cho ${missing} node moi`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  private countPresentTargetValues(rows: CsvRow[], targetLabel: string): number {
+    let count = 0;
+    for (const row of rows) {
+      const value = row[targetLabel];
+      if (value !== null && value !== undefined && String(value).trim() !== '') {
+        count++;
+      }
+    }
+    return count;
+  }
 
   private parseCsv(buffer: Buffer): { rows: CsvRow[]; headers: string[] } {
     let parsed: CsvRow[];
