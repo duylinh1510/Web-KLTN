@@ -4,9 +4,9 @@ import type { SuggestedPromptsResponse } from "../types";
 
 export const SUGGESTED_PROMPTS_QUERY_KEY = ["graph", "suggested-prompts"] as const;
 
-export function useSuggestedPrompts(enabled: boolean, dbId?: string | null) {
+export function useSuggestedPrompts(enabled: boolean, database?: string | null) {
   return useQuery<SuggestedPromptsResponse>({
-    queryKey: [...SUGGESTED_PROMPTS_QUERY_KEY, dbId ?? null],
+    queryKey: [...SUGGESTED_PROMPTS_QUERY_KEY, database ?? null],
     queryFn: getSuggestedPrompts,
     enabled,
     staleTime: 60_000,

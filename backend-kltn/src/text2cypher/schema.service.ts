@@ -19,14 +19,14 @@ export class SchemaService {
   // PUBLIC: Lấy full schema (cache hoặc Neo4j)
   // ============================================================
 
-  async getFullSchema(dbId?: string | null): Promise<string> {
-    const id = dbId ?? this.neo4jService.getDbId();
+  async getFullSchema(database?: string | null): Promise<string> {
+    const id = database ?? this.neo4jService.getCurrentDatabase();
 
-    // Nếu có dbId → kiểm tra cache file
+    // Nếu có database name → kiểm tra cache file
     if (id) {
       const cached = this.loadCachedSchema(id);
       if (cached) {
-        console.log(`[SchemaService] Schema loaded from cache file: schema_${id}.txt`);
+        console.log(`[SchemaService] Schema loaded from cache file: ${this.getCacheFileName(id)}`);
         return cached;
       }
     }
@@ -35,17 +35,17 @@ export class SchemaService {
     console.log('[SchemaService] Cache miss — fetching schema from Neo4j...');
     const schema = await this.getSchemaWithExamples();
 
-    // Lưu cache nếu có dbId
+    // Lưu cache nếu có database name
     if (id) {
       this.saveSchemaToDisk(id, schema);
-      console.log(`[SchemaService] Schema saved to cache: schema_${id}.txt`);
+      console.log(`[SchemaService] Schema saved to cache: ${this.getCacheFileName(id)}`);
     }
 
     return schema;
   }
 
-  async getSuggestedFraudPrompts(dbId?: string | null): Promise<SuggestedPrompt[]> {
-    const schema = await this.getFullSchema(dbId);
+  async getSuggestedFraudPrompts(database?: string | null): Promise<SuggestedPrompt[]> {
+    const schema = await this.getFullSchema(database);
     return this.buildFraudPrompts(schema);
   }
 
@@ -314,8 +314,8 @@ export class SchemaService {
   // PRIVATE: Cache helpers
   // ============================================================
 
-  private loadCachedSchema(dbId: string): string | null {
-    const filePath = this.getCacheFilePath(dbId);
+  private loadCachedSchema(database: string): string | null {
+    const filePath = this.getCacheFilePath(database);
     try {
       if (fs.existsSync(filePath)) {
         return fs.readFileSync(filePath, 'utf-8');
@@ -326,8 +326,8 @@ export class SchemaService {
     return null;
   }
 
-  private saveSchemaToDisk(dbId: string, schema: string): void {
-    const filePath = this.getCacheFilePath(dbId);
+  private saveSchemaToDisk(database: string, schema: string): void {
+    const filePath = this.getCacheFilePath(database);
     try {
       // Tạo folder nếu chưa tồn tại
       const dir = path.dirname(filePath);
@@ -340,8 +340,16 @@ export class SchemaService {
     }
   }
 
-  private getCacheFilePath(dbId: string): string {
-    return path.join(this.cacheDir, `schema_${dbId}.txt`);
+  private getCacheFilePath(database: string): string {
+    return path.join(this.cacheDir, this.getCacheFileName(database));
+  }
+
+  private getCacheFileName(database: string): string {
+    return `schema_${this.sanitizeDatabaseName(database)}.txt`;
+  }
+
+  private sanitizeDatabaseName(database: string): string {
+    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
   }
 
   // ============================================================

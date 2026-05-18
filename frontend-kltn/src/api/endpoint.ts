@@ -133,7 +133,7 @@ export async function getGraphPreview(): Promise<GraphPreviewResponse> {
 
 /**
  * GET /graph/suggested-prompts
- * Sinh câu hỏi gợi ý từ schema_<dbId>.txt/cache schema hiện tại.
+ * Sinh câu hỏi gợi ý từ schema_<database>.txt/cache schema hiện tại.
  */
 export async function getSuggestedPrompts(): Promise<SuggestedPromptsResponse> {
   const res = await apiClient.get<SuggestedPromptsResponse>(

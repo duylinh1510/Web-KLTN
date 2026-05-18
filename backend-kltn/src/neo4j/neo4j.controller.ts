@@ -17,16 +17,17 @@ export class Neo4jController {
   @Post('connect')
   @HttpCode(HttpStatus.OK)
   async connect(@Body() dto: ConnectNeo4jDto) {
+    const database = dto.database.trim();
     await this.neo4jService.connect(
       dto.uri,
       dto.user,
       dto.password,
-      dto.dbId,
-      dto.database,
+      database,
     );
     return {
       status: 'success',
-      message: `Đã kết nối tới ${dto.uri}${dto.dbId ? ` (dbId: ${dto.dbId})` : ''}${dto.database ? `, database: ${dto.database}` : ''}`,
+      message: `Đã kết nối tới ${dto.uri}, database: ${database}`,
+      database,
     };
   }
 
@@ -69,18 +70,19 @@ export class Neo4jController {
    */
   @Post('switch-database')
   @HttpCode(HttpStatus.OK)
-  switchDatabase(@Body() body: { database: string }) {
-    if (!body?.database) {
+  async switchDatabase(@Body() body: { database: string }) {
+    const database = body?.database?.trim();
+    if (!database) {
       throw new HttpException(
         'Thiếu field "database"',
         HttpStatus.BAD_REQUEST,
       );
     }
-    this.neo4jService.switchDatabase(body.database);
+    await this.neo4jService.switchDatabase(database);
     return {
       status: 'success',
-      message: `Đã chuyển sang database: ${body.database}`,
-      database: body.database,
+      message: `Đã chuyển sang database: ${database}`,
+      database,
     };
   }
 }

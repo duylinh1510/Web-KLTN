@@ -70,8 +70,8 @@ export class Csv2GraphController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const dbId = this.neo4j.getDbId();
-    const info = await this.datasetMeta.getDatasetInfo(dbId);
+    const database = this.neo4j.getCurrentDatabase();
+    const info = await this.datasetMeta.getDatasetInfo(database);
     return { status: 'success', ...info };
   }
 

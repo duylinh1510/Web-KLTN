@@ -30,7 +30,6 @@ export function useNeo4jStatus() {
       syncFromStatus({
         connected: query.data.connected,
         uri: query.data.uri,
-        dbId: query.data.dbId ?? null,
         database: query.data.database ?? null,
       });
     }

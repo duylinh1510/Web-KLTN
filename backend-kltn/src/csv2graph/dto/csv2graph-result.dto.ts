@@ -53,6 +53,12 @@ export interface Csv2GraphInferenceResult {
   inferenceMs?: number;
 }
 
+export interface Csv2GraphPretrainedResult {
+  success: true;
+  activeModelPath: string;
+  targetLabel: 'is_fraud';
+}
+
 export interface Csv2GraphResult {
   jobId: string;
   /** 'full' = build mới khi DB rỗng; 'append' = MERGE upsert vào dataset hiện tại */
@@ -63,5 +69,6 @@ export interface Csv2GraphResult {
   stats: Csv2GraphStats;
   files: Csv2GraphFiles;
   training?: Csv2GraphTrainingResult;
+  pretrained?: Csv2GraphPretrainedResult;
   inference?: Csv2GraphInferenceResult;
 }

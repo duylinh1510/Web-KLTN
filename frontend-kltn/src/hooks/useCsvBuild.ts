@@ -26,6 +26,8 @@ export type BuildCsvParams = {
    * Hiện tại chưa implement luồng train, chỉ lưu field vào schema.
    */
   trainMode?: boolean;
+  /** Demo mode: dùng active model fgnn_star.pt có sẵn, không train lại. */
+  pretrainedMode?: boolean;
 };
 
 /**
@@ -36,11 +38,19 @@ export type BuildCsvParams = {
  */
 export function useCsvBuild() {
   const qc = useQueryClient();
-  const dbId = useConnectionStore((s) => s.dbId);
+  const database = useConnectionStore((s) => s.database);
   const controllerRef = useRef<AbortController | null>(null);
 
   const mutation = useMutation<Csv2GraphRunResponse, unknown, BuildCsvParams>({
-    mutationFn: ({ file, targetLabel, nodeLabel, maxGroupSize, transactionIdCol, trainMode }) => {
+    mutationFn: ({
+      file,
+      targetLabel,
+      nodeLabel,
+      maxGroupSize,
+      transactionIdCol,
+      trainMode,
+      pretrainedMode,
+    }) => {
       const fd = new FormData();
       fd.append("file", file);
       if (targetLabel) fd.append("targetLabel", targetLabel);
@@ -53,6 +63,9 @@ export function useCsvBuild() {
       // Train mode flag (mock, dùng sau khi implement train flow)
       if (typeof trainMode === "boolean") {
         fd.append("trainMode", String(trainMode));
+      }
+      if (typeof pretrainedMode === "boolean") {
+        fd.append("pretrainedMode", String(pretrainedMode));
       }
 
       const controller = new AbortController();
@@ -69,12 +82,14 @@ export function useCsvBuild() {
       const inferenceSuffix = data.inference?.success
         ? ` · inference ${data.inference.predictedFraud}/${data.inference.total} fraud`
         : "";
+      const pretrainedSuffix = data.pretrained?.success
+        ? " · dùng model demo"
+        : "";
       toast.success(
-        `${modeLabel} xong: ${data.stats.numNodes} nodes, ${data.stats.numEdges} edges${trainSuffix}${inferenceSuffix}`,
+        `${modeLabel} xong: ${data.stats.numNodes} nodes, ${data.stats.numEdges} edges${trainSuffix}${pretrainedSuffix}${inferenceSuffix}`,
       );
-      // Invalidate với đúng key có dbId — trước đây dùng prefix không khớp
-      // nên query không refetch sau khi build/append.
-      qc.invalidateQueries({ queryKey: [...DATASET_INFO_QUERY_KEY, dbId] });
+      // Invalidate với đúng key theo database name hiện tại.
+      qc.invalidateQueries({ queryKey: [...DATASET_INFO_QUERY_KEY, database] });
       qc.invalidateQueries({ queryKey: GRAPH_PREVIEW_QUERY_KEY });
       qc.invalidateQueries({ queryKey: SUGGESTED_PROMPTS_QUERY_KEY });
     },

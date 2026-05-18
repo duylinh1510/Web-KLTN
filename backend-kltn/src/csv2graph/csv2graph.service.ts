@@ -18,6 +18,7 @@ import {
   Csv2GraphFiles,
   Csv2GraphStats,
   Csv2GraphInferenceResult,
+  Csv2GraphPretrainedResult,
   Csv2GraphTrainingResult,
 } from './dto/csv2graph-result.dto';
 import {
@@ -31,10 +32,10 @@ import {
  *
  * - DB rỗng → fullBuild():
  *     LLM classify → preprocess → star edges → ghi CSV/data.pt → ingest →
- *     lưu _latest_<dbId>.json (canonical schema cho lần sau).
+ *     lưu _latest_<database>.json (canonical schema cho lần sau).
  *
  * - DB đã có data → appendBuild():
- *     KHÔNG LLM, dùng schema canonical từ _latest_<dbId>.json.
+ *     KHÔNG LLM, dùng schema canonical từ _latest_<database>.json.
  *     Validate header CSV phải là subset của canonical columns.
  *     Skip preprocessed.csv + data.pt (giữ data.pt build đầu).
  */
@@ -61,8 +62,8 @@ export class Csv2GraphService {
     originalFileName: string,
     dto: Csv2GraphRunDto,
   ): Promise<Csv2GraphResult> {
-    const dbId = this.neo4j.getDbId();
-    const meta = this.datasetMeta.loadLatest(dbId);
+    const database = this.neo4j.getCurrentDatabase();
+    const meta = this.datasetMeta.loadLatest(database);
     const numExistingNodes = meta
       ? await this.datasetMeta.countNodes(meta.nodeLabel)
       : 0;
@@ -73,12 +74,12 @@ export class Csv2GraphService {
         `====== APPEND MODE — meta.jobId=${meta!.jobId}, ` +
           `nodeLabel=${meta!.nodeLabel}, existingNodes=${numExistingNodes} ======`,
       );
-      return this.appendBuild(fileBuffer, originalFileName, dto, meta!, dbId);
+      return this.appendBuild(fileBuffer, originalFileName, dto, meta!, database);
 
     }
 
     this.logger.log('====== FULL BUILD MODE (DB rỗng) ======');
-    return this.fullBuild(fileBuffer, originalFileName, dto, dbId);
+    return this.fullBuild(fileBuffer, originalFileName, dto, database);
   }
 
   // ============================================================
@@ -89,16 +90,34 @@ export class Csv2GraphService {
     fileBuffer: Buffer,
     originalFileName: string,
     dto: Csv2GraphRunDto,
-    dbId: string | null,
+    database: string | null,
   ): Promise<Csv2GraphResult> {
     const trainMode = dto.trainMode ?? false; // Default: chỉ ingest, không train
+    const pretrainedMode = dto.pretrainedMode ?? false;
+    if (trainMode && pretrainedMode) {
+      throw new HttpException(
+        'Không thể vừa train model vừa dùng model demo có sẵn.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     // targetLabel bắt buộc khi muốn build data.pt (cần nhãn cho GNN)
     // trainMode vẫn giữ nhưng không gate data.pt nữa — data.pt luôn cần có
-    const targetLabel = dto.targetLabel?.trim() ?? '';
+    const requestedTargetLabel = dto.targetLabel?.trim() ?? '';
+    const targetLabel = pretrainedMode
+      ? 'is_fraud'
+      : trainMode
+        ? requestedTargetLabel
+        : '';
     if (trainMode && !targetLabel) {
       throw new HttpException(
         'targetLabel là bắt buộc khi chọn train model.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (pretrainedMode && !this.gnnTrain.hasActiveModel()) {
+      throw new HttpException(
+        `Không tìm thấy model demo: ${this.gnnTrain.getActiveModelPath()}`,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -122,6 +141,7 @@ export class Csv2GraphService {
     this.logger.log(`  node_label     : ${nodeLabel}`);
     this.logger.log(`  ingestNeo4j    : ${ingestNeo4j}`);
     this.logger.log(`  trainMode      : ${trainMode}`);
+    this.logger.log(`  pretrainedMode : ${pretrainedMode}`);
     if (dto.transactionIdCol) {
       this.logger.log(`  transactionIdCol override: ${dto.transactionIdCol}`);
     }
@@ -140,7 +160,7 @@ export class Csv2GraphService {
     }
     this.logger.log(`  parsed: ${rows.length} rows × ${headers.length} cols`);
 
-    // Lưu headers gốc vào _raw_<dbId>.json NGAY SAU khi parse, TRƯỚC mọi xử lý.
+    // Lưu headers gốc vào _raw_<database>.json NGAY SAU khi parse, TRƯỚC mọi xử lý.
     // originalIdCol sẽ được cập nhật sau bước [3/8] khi biết user chọn cột nào.
     // (Lưu tạm với headers, sẽ ghi đè sau bước ensureNodeId)
 
@@ -181,10 +201,10 @@ export class Csv2GraphService {
       (c) => rawRows.length > 0 && c in rawRows[0],
     );
 
-    // Lưu _raw_<dbId>.json — nguồn sự thật duy nhất cho append validation.
+    // Lưu _raw_<database>.json — nguồn sự thật duy nhất cho append validation.
     // headers = tên cột GỐC (chưa rename), originalIdCol = cột user chọn làm ID.
     if (ingestNeo4j) {
-      this.datasetMeta.saveRawInfo(dbId, {
+      this.datasetMeta.saveRawInfo(database, {
         originalIdCol,
         rawColumns: headers,  // headers TRƯỚC ensureNodeId → vẫn có tên gốc
       });
@@ -249,6 +269,13 @@ export class Csv2GraphService {
     };
 
     let training: Csv2GraphTrainingResult | undefined;
+    const pretrained: Csv2GraphPretrainedResult | undefined = pretrainedMode
+      ? {
+          success: true,
+          activeModelPath: this.gnnTrain.getActiveModelPath(),
+          targetLabel: 'is_fraud',
+        }
+      : undefined;
 
     // Step 7: Build data.pt before Neo4j import.
     // If trainMode=true, training is a pre-ingest gate: any training error
@@ -299,19 +326,16 @@ export class Csv2GraphService {
         ...rawFeatureCols,
         ...(targetLabel ? [targetLabel] : []),
       ];
-      const pretrainedModelPath =
-        !training && targetLabel && this.gnnTrain.hasActiveModel()
-          ? this.gnnTrain.getActiveModelPath()
-          : undefined;
+      const pretrainedModelPath = pretrained?.activeModelPath;
       const activeModelPath = training?.activeModelPath ?? pretrainedModelPath;
-      this.datasetMeta.saveLatest(dbId, {
+      this.datasetMeta.saveLatest(database, {
         jobId,
         nodeLabel,
         columns: canonicalColumns,
         targetLabel: targetLabel || '',
         schema: fullSchema,
         trainMode,
-        hasModel: training?.success === true || !!pretrainedModelPath,
+        hasModel: training?.success === true || pretrained?.success === true,
         modelPath: training?.modelPath ?? pretrainedModelPath,
         activeModelPath,
         trainedAt: training ? new Date().toISOString() : undefined,
@@ -321,7 +345,15 @@ export class Csv2GraphService {
     }
 
     this.logger.log(`====== JOB ${jobId} DONE ======`);
-    return { jobId, schema: fullSchema, stats, files, mode: 'full', training };
+    return {
+      jobId,
+      schema: fullSchema,
+      stats,
+      files,
+      mode: 'full',
+      training,
+      pretrained,
+    };
   }
 
   // ============================================================
@@ -333,7 +365,7 @@ export class Csv2GraphService {
     originalFileName: string,
     dto: Csv2GraphRunDto,
     meta: DatasetMeta,
-    dbId: string | null,
+    database: string | null,
   ): Promise<Csv2GraphResult> {
     const jobId = this.makeJobId(originalFileName);
     const outputRoot =
@@ -390,12 +422,12 @@ export class Csv2GraphService {
     }
     const shouldInferAppend = canInferAppend && !appendHasCompleteTarget;
 
-    // ── [2/6] Đọc _raw_<dbId>.json và validate columns ──
+    // ── [2/6] Đọc _raw_<database>.json và validate columns ──
     this.logger.log('[2/6] Validate columns against _raw_ file...');
-    const rawInfo = this.datasetMeta.loadRawInfo(dbId);
+    const rawInfo = this.datasetMeta.loadRawInfo(database);
     if (!rawInfo) {
       throw new HttpException(
-        `Không tìm thấy thông tin CSV gốc (_raw_${dbId ?? ''}.json). ` +
+        `Không tìm thấy thông tin CSV gốc (_raw_${database ?? ''}.json). ` +
           `Cần thực hiện Full Build lại để tạo file này.`,
         HttpStatus.BAD_REQUEST,
       );

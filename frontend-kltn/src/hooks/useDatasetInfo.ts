@@ -17,11 +17,11 @@ export const DATASET_INFO_QUERY_KEY = ["dataset-info"] as const;
  */
 export function useDatasetInfo() {
   const isConnected = useConnectionStore((s) => s.isConnected);
-  const dbId = useConnectionStore((s) => s.dbId);
+  const database = useConnectionStore((s) => s.database);
   const syncFromInfo = useDatasetStore((s) => s.syncFromInfo);
 
   const query = useQuery({
-    queryKey: [...DATASET_INFO_QUERY_KEY, dbId],
+    queryKey: [...DATASET_INFO_QUERY_KEY, database],
     queryFn: getDatasetInfo,
     enabled: isConnected,
   });

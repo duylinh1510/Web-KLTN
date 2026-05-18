@@ -28,18 +28,16 @@ export type ConnectNeo4jRequest = {
   uri: string;
   user: string;
   password: string;
-  dbId?: string;
-  /** Database name (từ SHOW DATABASES). Null = default database của DBMS. */
-  database?: string;
+  /** Database name thật trong Neo4j instance. */
+  database: string;
 };
 
-export type ConnectNeo4jResponse = ApiSuccess<{ message: string }>;
+export type ConnectNeo4jResponse = ApiSuccess<{ message: string; database: string }>;
 export type DisconnectNeo4jResponse = ApiSuccess<{ message: string }>;
 
 export type Neo4jStatusResponse = ApiSuccess<{
   connected: boolean;
   uri: string | null;
-  dbId: string | null;
   database: string | null;
 }>;
 
@@ -185,6 +183,12 @@ export type Csv2GraphInferenceResult = {
   inferenceMs?: number;
 };
 
+export type Csv2GraphPretrainedResult = {
+  success: true;
+  activeModelPath: string;
+  targetLabel: "is_fraud";
+};
+
 export type Csv2GraphRunResponse = ApiSuccess<{
   jobId: string;
   mode: "full" | "append";
@@ -193,6 +197,7 @@ export type Csv2GraphRunResponse = ApiSuccess<{
   stats: Csv2GraphStats;
   files: Csv2GraphFiles;
   training?: Csv2GraphTrainingResult;
+  pretrained?: Csv2GraphPretrainedResult;
   inference?: Csv2GraphInferenceResult;
 }>;
 

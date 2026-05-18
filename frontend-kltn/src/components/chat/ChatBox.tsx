@@ -15,9 +15,9 @@ export function ChatBox() {
   const stage = useQueryStore((s) => s.stage);
   const errorMessages = useQueryStore((s) => s.errorMessages);
   const isConnected = useConnectionStore((s) => s.isConnected);
-  const dbId = useConnectionStore((s) => s.dbId);
+  const database = useConnectionStore((s) => s.database);
   const hasData = useDatasetStore((s) => s.hasData);
-  const suggestedPrompts = useSuggestedPrompts(isConnected && hasData, dbId);
+  const suggestedPrompts = useSuggestedPrompts(isConnected && hasData, database);
 
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);

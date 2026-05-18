@@ -4,20 +4,18 @@ import { persist, createJSONStorage } from "zustand/middleware";
 type ConnectionState = {
   uri: string | null;
   user: string | null;
-  dbId: string | null;
   /** Database đang active (từ SHOW DATABASES). Null = default database Neo4j. */
   database: string | null;
   isConnected: boolean;
 };
 
 type ConnectionActions = {
-  setConnected: (uri: string, user: string, dbId?: string, database?: string) => void;
+  setConnected: (uri: string, user: string, database: string) => void;
   setDatabase: (database: string) => void;
   reset: () => void;
   syncFromStatus: (payload: {
     connected: boolean;
     uri: string | null;
-    dbId: string | null;
     database: string | null;
   }) => void;
 };
@@ -25,7 +23,6 @@ type ConnectionActions = {
 const initialState: ConnectionState = {
   uri: null,
   user: null,
-  dbId: null,
   database: null,
   isConnected: false,
 };
@@ -35,12 +32,11 @@ export const useConnectionStore = create<ConnectionState & ConnectionActions>()(
     (set) => ({
       ...initialState,
 
-      setConnected: (uri, user, dbId, database) =>
+      setConnected: (uri, user, database) =>
         set({
           uri,
           user,
-          dbId: dbId ?? null,
-          database: database ?? null,
+          database,
           isConnected: true,
         }),
 
@@ -49,11 +45,10 @@ export const useConnectionStore = create<ConnectionState & ConnectionActions>()(
 
       reset: () => set({ ...initialState }),
 
-      syncFromStatus: ({ connected, uri, dbId, database }) =>
+      syncFromStatus: ({ connected, uri, database }) =>
         set((prev) => ({
           uri: connected ? uri : null,
           user: connected ? prev.user : null,
-          dbId: connected ? dbId : null,
           database: connected ? database : null,
           isConnected: connected,
         })),
@@ -64,7 +59,6 @@ export const useConnectionStore = create<ConnectionState & ConnectionActions>()(
       partialize: (state) => ({
         uri: state.uri,
         user: state.user,
-        dbId: state.dbId,
         database: state.database,
         isConnected: state.isConnected,
       }),

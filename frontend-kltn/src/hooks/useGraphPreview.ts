@@ -20,13 +20,13 @@ export const GRAPH_PREVIEW_QUERY_KEY = ["graph-preview"] as const;
  */
 export function useGraphPreview() {
   const isConnected = useConnectionStore((s) => s.isConnected);
-  const dbId = useConnectionStore((s) => s.dbId);
+  const database = useConnectionStore((s) => s.database);
   const hasData = useDatasetStore((s) => s.hasData);
 
   const enabled = isConnected && hasData;
 
   const query = useQuery({
-    queryKey: [...GRAPH_PREVIEW_QUERY_KEY, dbId],
+    queryKey: [...GRAPH_PREVIEW_QUERY_KEY, database],
     queryFn: getGraphPreview,
     enabled,
   });

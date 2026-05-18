@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, Matches } from 'class-validator';
+import { IsString, IsNotEmpty, Matches } from 'class-validator';
 
 export class ConnectNeo4jDto {
   @Matches(/^(bolt|neo4j)(\+s|\+ssc)?:\/\/.+/, {
@@ -15,14 +15,6 @@ export class ConnectNeo4jDto {
   password!: string;
 
   @IsString()
-  @IsOptional()
-  dbId?: string;
-
-  /**
-   * Database name (từ SHOW DATABASES). Tuỳ chọn khi connect.
-   * Nếu bỏ trống, driver dùng default database của DBMS.
-   */
-  @IsString()
-  @IsOptional()
-  database?: string;
+  @IsNotEmpty()
+  database!: string;
 }

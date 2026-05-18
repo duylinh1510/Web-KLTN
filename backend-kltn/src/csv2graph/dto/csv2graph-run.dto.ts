@@ -53,6 +53,15 @@ export class Csv2GraphRunDto {
   @IsBoolean()
   trainMode?: boolean;
 
+  /**
+   * Demo mode: dùng active model fgnn_star.pt có sẵn, không train lại.
+   * BE mặc định targetLabel=is_fraud và lưu metadata hasModel=true.
+   */
+  @IsOptional()
+  @toBooleanTransform
+  @IsBoolean()
+  pretrainedMode?: boolean;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

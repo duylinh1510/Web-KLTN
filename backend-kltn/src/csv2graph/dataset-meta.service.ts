@@ -7,7 +7,7 @@ import { FullSchema } from './interfaces/classification-schema.interface';
 
 /**
  * Metadata snapshot của dataset đang nằm trong Neo4j.
- * File: `<output_dir>/_latest_<dbId>.json`
+ * File: `<output_dir>/_latest_<database>.json`
  */
 export interface DatasetMeta {
   jobId: string;
@@ -29,7 +29,7 @@ export interface DatasetMeta {
 
 /**
  * Thông tin CSV gốc — nguồn sự thật duy nhất cho append validation.
- * File: `<output_dir>/_raw_<dbId>.json`
+ * File: `<output_dir>/_raw_<database>.json`
  * Ghi một lần trong fullBuild, KHÔNG ghi đè khi append.
  */
 export interface RawInfo {
@@ -60,11 +60,11 @@ export class DatasetMetaService {
   ) {}
 
   // ============================================================
-  // Meta (_latest_<dbId>.json)
+  // Meta (_latest_<database>.json)
   // ============================================================
 
-  loadLatest(dbId?: string | null): DatasetMeta | null {
-    const filePath = this.metaFilePath(dbId);
+  loadLatest(database?: string | null): DatasetMeta | null {
+    const filePath = this.metaFilePath(database);
     if (!fs.existsSync(filePath)) return null;
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
@@ -80,22 +80,22 @@ export class DatasetMetaService {
     }
   }
 
-  saveLatest(dbId: string | null | undefined, meta: DatasetMeta): void {
-    const filePath = this.metaFilePath(dbId);
+  saveLatest(database: string | null | undefined, meta: DatasetMeta): void {
+    const filePath = this.metaFilePath(database);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(meta, null, 2), 'utf-8');
     this.logger.log(`Saved dataset metadata → ${filePath}`);
   }
 
   // ============================================================
-  // RawInfo (_raw_<dbId>.json) — nguồn sự thật cho append
+  // RawInfo (_raw_<database>.json) — nguồn sự thật cho append
   // ============================================================
 
   /**
    * Lưu thông tin CSV gốc. Gọi một lần trong fullBuild, KHÔNG gọi lại khi append.
    */
-  saveRawInfo(dbId: string | null | undefined, info: RawInfo): void {
-    const filePath = this.rawInfoFilePath(dbId);
+  saveRawInfo(database: string | null | undefined, info: RawInfo): void {
+    const filePath = this.rawInfoFilePath(database);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(info, null, 2), 'utf-8');
     this.logger.log(
@@ -105,10 +105,10 @@ export class DatasetMetaService {
   }
 
   /**
-   * Đọc `_raw_<dbId>.json`. Trả null nếu file chưa tồn tại.
+   * Đọc `_raw_<database>.json`. Trả null nếu file chưa tồn tại.
    */
-  loadRawInfo(dbId?: string | null): RawInfo | null {
-    const filePath = this.rawInfoFilePath(dbId);
+  loadRawInfo(database?: string | null): RawInfo | null {
+    const filePath = this.rawInfoFilePath(database);
     if (!fs.existsSync(filePath)) return null;
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
@@ -193,8 +193,8 @@ export class DatasetMetaService {
     return duplicates;
   }
 
-  async getDatasetInfo(dbId?: string | null): Promise<DatasetInfo> {
-    const meta = this.loadLatest(dbId);
+  async getDatasetInfo(database?: string | null): Promise<DatasetInfo> {
+    const meta = this.loadLatest(database);
     if (!meta) return { hasData: false };
 
     const numNodes = await this.countNodes(meta.nodeLabel);
@@ -219,24 +219,24 @@ export class DatasetMetaService {
   // Private
   // ============================================================
 
-  private metaFilePath(dbId?: string | null): string {
+  private metaFilePath(database?: string | null): string {
     const root =
       this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
-    const safeDbId = dbId ? this.sanitizeDbId(dbId) : null;
-    const filename = safeDbId ? `_latest_${safeDbId}.json` : '_latest.json';
+    const safeDatabase = database ? this.sanitizeDatabaseName(database) : null;
+    const filename = safeDatabase ? `_latest_${safeDatabase}.json` : '_latest.json';
     return path.resolve(process.cwd(), root, filename);
   }
 
-  private rawInfoFilePath(dbId?: string | null): string {
+  private rawInfoFilePath(database?: string | null): string {
     const root =
       this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
-    const safeDbId = dbId ? this.sanitizeDbId(dbId) : null;
-    const filename = safeDbId ? `_raw_${safeDbId}.json` : '_raw.json';
+    const safeDatabase = database ? this.sanitizeDatabaseName(database) : null;
+    const filename = safeDatabase ? `_raw_${safeDatabase}.json` : '_raw.json';
     return path.resolve(process.cwd(), root, filename);
   }
 
-  private sanitizeDbId(dbId: string): string {
-    return dbId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  private sanitizeDatabaseName(database: string): string {
+    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
   }
 
   private modelExists(meta: DatasetMeta): boolean {

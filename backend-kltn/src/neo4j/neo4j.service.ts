@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Neo4jService — quản lý kết nối driver + database selection.
@@ -20,7 +22,6 @@ import axios from 'axios';
 export class Neo4jService implements OnModuleDestroy {
   private driver: Driver | null = null;
   private currentUri: string | null = null;
-  private currentDbId: string | null = null;
 
   /**
    * Database đang active (từ SHOW DATABASES).
@@ -33,17 +34,23 @@ export class Neo4jService implements OnModuleDestroy {
   // ============================================================
 
   /**
-   * Kết nối tới Neo4j DBMS.
-   * dbId: cache key cho schema metadata (tuỳ chọn).
-   * database: database name để dùng trong session (tuỳ chọn, null = default).
+   * Kết nối tới Neo4j DBMS bằng database name thật trong instance.
+   * Database name này cũng là cache key cho schema/metadata local.
    */
   async connect(
     uri: string,
     user: string,
     pass: string,
-    dbId?: string,
-    database?: string,
+    database: string,
   ): Promise<boolean> {
+    const requestedDatabase = database.trim();
+    if (!requestedDatabase) {
+      throw new HttpException(
+        'Vui lòng nhập Database Name',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     try {
       // Đóng kết nối cũ nếu có
       if (this.driver) await this.driver.close();
@@ -54,14 +61,21 @@ export class Neo4jService implements OnModuleDestroy {
       await this.driver.getServerInfo();
 
       this.currentUri = uri;
-      this.currentDbId = dbId ?? null;
-      this.currentDatabase = database ?? null;
+      this.currentDatabase = null;
+
+      const databases = await this.listDatabases();
+      this.assertDatabaseExists(requestedDatabase, databases);
+
+      this.currentDatabase = requestedDatabase;
+      await this.assertDatabaseUsable(requestedDatabase);
       return true;
     } catch (error: any) {
-      this.driver = null;
-      this.currentUri = null;
-      this.currentDbId = null;
-      this.currentDatabase = null;
+      await this.clearConnection();
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
       console.error('[Neo4j connect failed]', error.code, error.message);
 
       const code = error?.code ?? '';
@@ -89,7 +103,6 @@ export class Neo4jService implements OnModuleDestroy {
       await this.driver.close();
       this.driver = null;
       this.currentUri = null;
-      this.currentDbId = null;
       this.currentDatabase = null;
     }
   }
@@ -101,19 +114,13 @@ export class Neo4jService implements OnModuleDestroy {
   getStatus(): {
     connected: boolean;
     uri: string | null;
-    dbId: string | null;
     database: string | null;
   } {
     return {
       connected: this.driver !== null,
       uri: this.currentUri,
-      dbId: this.currentDbId,
       database: this.currentDatabase,
     };
-  }
-
-  getDbId(): string | null {
-    return this.currentDbId;
   }
 
   getCurrentDatabase(): string | null {
@@ -155,14 +162,32 @@ export class Neo4jService implements OnModuleDestroy {
    *
    * @param database - Tên database (từ SHOW DATABASES)
    */
-  switchDatabase(database: string): void {
+  async switchDatabase(database: string): Promise<void> {
     if (!this.driver) {
       throw new HttpException(
         'Vui lòng kết nối Database trước!',
         HttpStatus.BAD_REQUEST,
       );
     }
-    this.currentDatabase = database;
+    const requestedDatabase = database.trim();
+    if (!requestedDatabase) {
+      throw new HttpException(
+        'Thiếu field "database"',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const previousDatabase = this.currentDatabase;
+    const databases = await this.listDatabases();
+    this.assertDatabaseExists(requestedDatabase, databases);
+
+    this.currentDatabase = requestedDatabase;
+    try {
+      await this.assertDatabaseUsable(requestedDatabase);
+    } catch (error) {
+      this.currentDatabase = previousDatabase;
+      throw error;
+    }
   }
 
   // ============================================================
@@ -312,6 +337,65 @@ export class Neo4jService implements OnModuleDestroy {
     } finally {
       await session.close();
     }
+  }
+
+  private assertDatabaseExists(database: string, databases: string[]): void {
+    if (databases.includes(database)) return;
+    throw new HttpException(
+      `Database '${database}' không tồn tại hoặc không online trong Neo4j instance hiện tại`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private async assertDatabaseUsable(database: string): Promise<void> {
+    const totalNodes = await this.countAllNodes();
+    if (totalNodes === 0 || this.schemaCacheExists(database)) return;
+
+    throw new HttpException(
+      `Database '${database}' đã có dữ liệu nhưng hệ thống chưa có schema cache '${this.schemaCacheFileName(database)}'. Vui lòng chọn đúng database hoặc tạo/đổi tên schema tương ứng.`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private async countAllNodes(): Promise<number> {
+    const session = this.getReadSession();
+    try {
+      const res = await session.run('MATCH (n) RETURN count(n) AS c');
+      const c = res.records[0]?.get('c');
+      return typeof c === 'number' ? c : Number(c?.toNumber?.() ?? c ?? 0);
+    } finally {
+      await session.close();
+    }
+  }
+
+  private schemaCacheExists(database: string): boolean {
+    return fs.existsSync(this.schemaCacheFilePath(database));
+  }
+
+  private schemaCacheFilePath(database: string): string {
+    return path.resolve(
+      process.cwd(),
+      'data',
+      'schemas',
+      this.schemaCacheFileName(database),
+    );
+  }
+
+  private schemaCacheFileName(database: string): string {
+    return `schema_${this.sanitizeDatabaseName(database)}.txt`;
+  }
+
+  private sanitizeDatabaseName(database: string): string {
+    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  }
+
+  private async clearConnection(): Promise<void> {
+    if (this.driver) {
+      await this.driver.close().catch(() => undefined);
+    }
+    this.driver = null;
+    this.currentUri = null;
+    this.currentDatabase = null;
   }
 
   async onModuleDestroy() {

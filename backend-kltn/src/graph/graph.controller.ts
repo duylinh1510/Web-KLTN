@@ -85,8 +85,8 @@ export class GraphController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const dbId = this.neo4jService.getDbId();
-    const meta = this.datasetMeta.loadLatest(dbId);
+    const database = this.neo4jService.getCurrentDatabase();
+    const meta = this.datasetMeta.loadLatest(database);
     if (!meta) {
       throw new HttpException(
         'Database rỗng, vui lòng upload CSV trước',
@@ -136,8 +136,8 @@ export class GraphController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const dbId = this.neo4jService.getDbId();
-    const meta = this.datasetMeta.loadLatest(dbId);
+    const database = this.neo4jService.getCurrentDatabase();
+    const meta = this.datasetMeta.loadLatest(database);
     if (!meta) {
       throw new HttpException(
         'Database rỗng, vui lòng upload CSV trước',
@@ -145,7 +145,7 @@ export class GraphController {
       );
     }
 
-    const prompts = await this.schemaService.getSuggestedFraudPrompts(dbId);
+    const prompts = await this.schemaService.getSuggestedFraudPrompts(database);
     return { status: 'success', prompts };
   }
 }

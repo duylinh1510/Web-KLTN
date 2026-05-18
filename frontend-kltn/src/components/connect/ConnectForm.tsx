@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { isAppApiError } from "../../api/client";
 import { useConnectNeo4j } from "../../hooks/useConnectNeo4j";
 import { useDatabaseList, useSwitchDatabase } from "../../hooks/useDatabaseSelector";
 import { useConnectionStore } from "../../store/connectionStore";
@@ -10,15 +11,16 @@ import {
   validateNeo4jPassword,
 } from "../../constants/presets";
 
-type FieldName = "uri" | "user" | "password";
+type FieldName = "uri" | "user" | "password" | "database";
 type FormErrors = Partial<Record<FieldName, string>>;
 
 export function ConnectForm() {
   const [uri, setUri] = useState<string>(NEO4J_URI_PRESETS[0]?.uri ?? "");
   const [user, setUser] = useState<string>(DEFAULT_NEO4J_USER);
   const [password, setPassword] = useState<string>("");
-  const [dbId, setDbId] = useState<string>("");
+  const [database, setDatabase] = useState<string>("neo4j");
   const [errors, setErrors] = useState<FormErrors>({});
+  const [connectErrorMessages, setConnectErrorMessages] = useState<string[]>([]);
 
   const mutation = useConnectNeo4j();
   const isConnected = useConnectionStore((s) => s.isConnected);
@@ -32,6 +34,16 @@ export function ConnectForm() {
   useEffect(() => {
     if (mutation.isSuccess) setPassword("");
   }, [mutation.isSuccess]);
+
+  useEffect(() => {
+    if (currentDatabase) setDatabase(currentDatabase);
+  }, [currentDatabase]);
+
+  useEffect(() => {
+    if (mutation.error) {
+      setConnectErrorMessages(getErrorMessages(mutation.error));
+    }
+  }, [mutation.error]);
 
   function clearFieldError(field: FieldName) {
     setErrors((prev) => {
@@ -47,6 +59,7 @@ export function ConnectForm() {
     const uriErr = validateNeo4jUri(uri);
     const userErr = validateNeo4jUser(user);
     const pwErr = validateNeo4jPassword(password);
+    if (!database.trim()) e.database = "Vui lòng nhập Database Name.";
     if (uriErr) e.uri = uriErr;
     if (userErr) e.user = userErr;
     if (pwErr) e.password = pwErr;
@@ -58,11 +71,12 @@ export function ConnectForm() {
     const next = validateAll();
     setErrors(next);
     if (Object.keys(next).length > 0) return;
+    setConnectErrorMessages([]);
     mutation.mutate({
       uri: uri.trim(),
       user: user.trim(),
       password,
-      dbId: dbId.trim() || undefined,
+      database: database.trim(),
     });
   }
 
@@ -132,16 +146,19 @@ export function ConnectForm() {
         />
       </Field>
 
-      <Field label="Database ID (cache schema)" htmlFor="neo4j-dbid">
+      <Field label="Database Name" htmlFor="neo4j-database" error={errors.database}>
         <input
-          id="neo4j-dbid"
+          id="neo4j-database"
           type="text"
-          value={dbId}
-          onChange={(e) => setDbId(e.target.value)}
-          placeholder="VD: fraud_db_v1 (tuỳ chọn)"
+          value={database}
+          onChange={(e) => {
+            setDatabase(e.target.value);
+            clearFieldError("database");
+          }}
+          placeholder="VD: neo4j"
           autoComplete="off"
           disabled={isPending}
-          className={inputCls(false)}
+          className={inputCls(!!errors.database)}
         />
       </Field>
 
@@ -166,6 +183,13 @@ export function ConnectForm() {
           isLoading={dbLoading}
           isSwitching={switchMutation.isPending}
           onSwitch={(db) => switchMutation.mutate(db)}
+        />
+      )}
+
+      {connectErrorMessages.length > 0 && (
+        <ConnectErrorModal
+          messages={connectErrorMessages}
+          onClose={() => setConnectErrorMessages([])}
         />
       )}
     </form>
@@ -230,6 +254,50 @@ function DatabaseSelector({
       )}
     </div>
   );
+}
+
+function ConnectErrorModal({
+  messages,
+  onClose,
+}: {
+  messages: string[];
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="neo4j-connect-error-title"
+    >
+      <div className="w-full max-w-md rounded-lg border border-red-900/70 bg-slate-950 p-4 shadow-2xl shadow-red-950/30">
+        <div
+          id="neo4j-connect-error-title"
+          className="text-sm font-semibold text-red-200"
+        >
+          Không thể kết nối database
+        </div>
+        <div className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-300">
+          {messages.map((message, index) => (
+            <div key={index}>{message}</div>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full rounded-md border border-red-800 bg-red-950/50 px-3 py-2 text-xs font-semibold text-red-100 transition hover:border-red-700 hover:bg-red-900/70"
+        >
+          Đóng
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getErrorMessages(error: unknown): string[] {
+  if (isAppApiError(error)) return error.messages;
+  if (error instanceof Error) return [error.message];
+  return ["Kết nối Neo4j thất bại"];
 }
 
 // ============================================================
