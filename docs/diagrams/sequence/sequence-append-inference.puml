@@ -1,0 +1,66 @@
+@startuml sequence_append_inference
+title Sequence Diagram - Luồng append CSV + inference fraud
+
+autonumber
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam defaultFontName Arial
+skinparam ParticipantBorderColor #334155
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam DatabaseBorderColor #0F766E
+skinparam DatabaseBackgroundColor #ECFDF5
+
+actor "Người dùng" as User
+boundary "Frontend\nCsvUploadPanel" as FE
+control "Backend\nCsv2GraphController" as Controller
+control "Csv2GraphService" as Csv2Graph
+control "DatasetMetaService" as MetaService
+control "FeatureService" as Feature
+control "DataPtService" as DataPt
+control "GnnInferenceService" as GnnInference
+control "Python GNN Service" as GnnService
+control "Neo4jIngestService" as Ingest
+database "Neo4j" as Neo4j
+collections "Metadata Cache\n_latest_[database].json\n_raw_[database].json" as Meta
+collections "Model File\nfgnn_star.pt" as Model
+
+User -> FE: Upload CSV mới\nkhông có is_fraud
+FE -> Controller: POST /csv2graph/run
+Controller -> Csv2Graph: run(file, dto)
+Csv2Graph -> MetaService: loadLatest(database)
+MetaService -> Meta: Đọc metadata dataset
+Meta --> MetaService: nodeLabel, schema, targetLabel, hasModel
+MetaService --> Csv2Graph: meta
+
+Csv2Graph -> Neo4j: countNodes(nodeLabel)
+Neo4j --> Csv2Graph: existingNodes > 0
+Csv2Graph -> Csv2Graph: Chọn APPEND mode
+Csv2Graph -> MetaService: loadRawInfo(database)
+MetaService -> Meta: Đọc raw columns gốc
+Meta --> MetaService: rawColumns
+MetaService --> Csv2Graph: RawInfo
+
+Csv2Graph -> Csv2Graph: Parse CSV + validate columns
+Csv2Graph -> Feature: Encode theo schema cũ
+Feature --> Csv2Graph: encodedRows
+Csv2Graph -> DataPt: buildDataPt(jobDir, inference)
+DataPt --> Csv2Graph: data.pt
+
+Csv2Graph -> GnnInference: predictDataPt(data.pt)
+GnnInference -> GnnService: POST /predict-data-pt
+GnnService -> Model: Load fgnn_star.pt
+GnnService --> GnnInference: scores + predicted labels
+GnnInference --> Csv2Graph: prediction
+
+Csv2Graph -> Csv2Graph: Gán nhãn is_fraud vào rows mới
+Csv2Graph -> Ingest: ingest(rows đã gán nhãn,\nMERGE mode)
+Ingest -> Neo4j: MERGE nodes + relationships
+Neo4j --> Ingest: Ingest stats
+Ingest --> Csv2Graph: OK
+
+Csv2Graph --> Controller: response.inference
+Controller --> FE: Append success
+FE --> User: Toast số fraud dự đoán\nvà cập nhật graph
+
+@enduml

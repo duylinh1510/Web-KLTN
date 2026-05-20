@@ -1,0 +1,64 @@
+@startuml sequence_demo_model
+title Sequence Diagram - Luồng dùng model demo fgnn_star.pt
+
+autonumber
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam defaultFontName Arial
+skinparam ParticipantBorderColor #334155
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam DatabaseBorderColor #0F766E
+skinparam DatabaseBackgroundColor #ECFDF5
+
+actor "Người dùng" as User
+boundary "Frontend\nCsvUploadPanel" as FE
+control "Backend\nCsv2GraphController" as Controller
+control "Csv2GraphService" as Csv2Graph
+control "GnnTrainService" as GnnTrain
+control "DataPtService" as DataPt
+control "Python Sidecar\ncsvtograph_sidecar" as Sidecar
+control "Neo4jIngestService" as Ingest
+database "Neo4j" as Neo4j
+collections "Model File\nfgnn_star.pt" as Model
+collections "Metadata Cache" as Meta
+
+User -> FE: Tick "Dùng model demo có sẵn"
+FE -> FE: Set targetLabel = is_fraud\nTắt trainModel
+User -> FE: Bấm Build Graph
+FE -> Controller: POST /csv2graph/run\ntargetLabel=is_fraud\npretrainedMode=true\ntrainMode=false
+
+Controller -> Csv2Graph: run(file, dto)
+Csv2Graph -> GnnTrain: hasActiveModel()
+GnnTrain -> Model: Kiểm tra fgnn_star.pt
+
+alt Không có fgnn_star.pt
+  GnnTrain --> Csv2Graph: false
+  Csv2Graph --> Controller: Throw BadRequest
+  Controller --> FE: 400 error
+  FE --> User: Báo thiếu model demo
+else Có fgnn_star.pt
+  GnnTrain --> Csv2Graph: true
+  Csv2Graph -> Csv2Graph: Parse CSV + kiểm tra cột is_fraud
+  Csv2Graph -> Csv2Graph: Build graph + encoded features
+  Csv2Graph -> DataPt: buildDataPt(jobDir)
+  DataPt -> Sidecar: Build data.pt từ preprocessed.csv
+  Sidecar --> DataPt: data.pt
+
+  note over Csv2Graph
+    Demo mode không gọi train.
+    Model active đã có sẵn.
+  end note
+
+  Csv2Graph -> Ingest: ingest(rawRows, edges, CREATE mode)
+  Ingest -> Neo4j: CREATE graph data
+  Neo4j --> Ingest: Ingest stats
+  Ingest --> Csv2Graph: OK
+
+  Csv2Graph -> Meta: saveLatest(hasModel=true,\nactiveModelPath=fgnn_star.pt,\ntargetLabel=is_fraud)
+  Csv2Graph --> Controller: response.pretrained
+  Controller --> FE: Build success
+  FE --> User: Toast "dùng model demo"
+end
+
+@enduml

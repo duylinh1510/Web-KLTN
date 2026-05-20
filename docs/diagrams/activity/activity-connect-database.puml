@@ -1,0 +1,79 @@
+@startuml activity_connect_database
+title Activity Diagram - Kết nối Neo4j Database
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam activity {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+  FontColor #111111
+}
+skinparam activityDiamond {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+}
+skinparam swimlane {
+  BorderColor #111111
+  TitleBackgroundColor #FFFFFF
+  TitleFontColor #111111
+}
+
+|Người dùng|
+start
+:Mở form kết nối Neo4j;
+:Nhập URI, username, password,\nDatabase Name;
+:Bấm Connect;
+
+|Hệ thống|
+:Tạo Neo4j driver;
+
+|CSDL Neo4j|
+:Kiểm tra credential\nbằng getServerInfo;
+
+|Hệ thống|
+if (Kết nối DBMS hợp lệ?) then (Không)
+  :Tạo thông báo lỗi kết nối;
+  |Người dùng|
+  :Hiển thị modal lỗi kết nối;
+  stop
+else (Có)
+endif
+
+|CSDL Neo4j|
+:Truy vấn SHOW DATABASES;
+
+|Hệ thống|
+if (Database Name tồn tại?) then (Không)
+  :Tạo thông báo lỗi database;
+  |Người dùng|
+  :Hiển thị modal lỗi\nDatabase Name không hợp lệ;
+  stop
+else (Có)
+endif
+
+|CSDL Neo4j|
+:Đếm số node trong database;
+
+|Hệ thống|
+if (Database có dữ liệu?) then (Có)
+  :Kiểm tra file\nschema_[database].txt;
+  if (Có schema cache?) then (Không)
+    :Tạo thông báo lỗi\nthiếu schema cache;
+    |Người dùng|
+    :Hiển thị modal lỗi\nthiếu schema cache;
+    stop
+  else (Có)
+  endif
+else (Không)
+  :Đánh dấu database rỗng;
+endif
+
+|Hệ thống|
+:Lưu trạng thái connected;
+
+|Người dùng|
+:Có thể upload CSV\nhoặc truy vấn dữ liệu;
+stop
+
+@enduml

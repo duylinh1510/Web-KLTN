@@ -1,0 +1,144 @@
+@startuml usecase
+title Use Case Diagram - Hệ thống phát hiện gian lận giao dịch
+
+left to right direction
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontName Arial
+skinparam packageStyle rectangle
+skinparam actor {
+  BorderColor #334155
+  BackgroundColor #F8FAFC
+  FontColor #0F172A
+}
+skinparam usecase {
+  BorderColor #0F766E
+  BackgroundColor #ECFDF5
+  FontColor #0F172A
+}
+skinparam rectangle {
+  BorderColor #CBD5E1
+  FontColor #0F172A
+}
+
+actor "Người dùng" as User
+actor "Neo4j DBMS" as Neo4j
+actor "CSV2Graph LLM\n/ Colab API" as CsvLlm
+actor "Text2Cypher LLM\n/ Colab API" as T2C
+actor "Python GNN Service" as GnnService
+actor "Model F-GNN\nfgnn_star.pt" as FgnnModel
+
+rectangle "Fraud Detection Web System" {
+  package "Kết nối dữ liệu" {
+    usecase "Kết nối Neo4j" as UC_Connect
+    usecase "Kiểm tra Database Name" as UC_CheckDb
+    usecase "Kiểm tra schema cache\nkhi DB đã có dữ liệu" as UC_CheckSchema
+    usecase "Chọn / đổi database" as UC_SwitchDb
+    usecase "Xem trạng thái dataset" as UC_DatasetInfo
+  }
+
+  package "CSV to Graph" {
+    usecase "Upload CSV" as UC_UploadCsv
+    usecase "Gợi ý Transaction ID" as UC_SuggestTxnId
+    usecase "Build Graph mới" as UC_FullBuild
+    usecase "Phân tích schema CSV" as UC_ClassifySchema
+    usecase "Tạo nodes.csv / edges.csv" as UC_ExportGraphCsv
+    usecase "Import graph vào Neo4j" as UC_ImportNeo4j
+    usecase "Lưu metadata dataset\nvà schema" as UC_SaveMeta
+  }
+
+  package "Model F-GNN" {
+    usecase "Train model sau khi build" as UC_Train
+    usecase "Dùng model demo có sẵn" as UC_DemoModel
+    usecase "Tạo data.pt" as UC_BuildDataPt
+    usecase "Append CSV mới" as UC_AppendCsv
+    usecase "Inference fraud\ncho dữ liệu mới" as UC_Inference
+    usecase "Gán nhãn is_fraud\ntrước khi import" as UC_LabelFraud
+  }
+
+  package "Text2Cypher & Trực quan hóa" {
+    usecase "Nhập câu hỏi tự nhiên" as UC_AskQuestion
+    usecase "Lấy schema graph" as UC_LoadSchema
+    usecase "Sinh Cypher" as UC_GenerateCypher
+    usecase "Self-correct Cypher" as UC_CorrectCypher
+    usecase "Thực thi Cypher" as UC_RunCypher
+    usecase "Hiển thị graph\nvà bảng kết quả" as UC_RenderResult
+    usecase "Xem gợi ý câu hỏi fraud" as UC_SuggestPrompts
+  }
+}
+
+User --> UC_Connect
+User --> UC_SwitchDb
+User --> UC_DatasetInfo
+User --> UC_UploadCsv
+User --> UC_FullBuild
+User --> UC_Train
+User --> UC_DemoModel
+User --> UC_AppendCsv
+User --> UC_AskQuestion
+User --> UC_SuggestPrompts
+
+UC_Connect ..> UC_CheckDb : <<include>>
+UC_Connect ..> UC_CheckSchema : <<include>>
+UC_SwitchDb ..> UC_CheckDb : <<include>>
+UC_SwitchDb ..> UC_CheckSchema : <<include>>
+
+UC_UploadCsv ..> UC_SuggestTxnId : <<include>>
+UC_FullBuild ..> UC_ClassifySchema : <<include>>
+UC_FullBuild ..> UC_ExportGraphCsv : <<include>>
+UC_FullBuild ..> UC_ImportNeo4j : <<include>>
+UC_FullBuild ..> UC_SaveMeta : <<include>>
+
+UC_Train ..> UC_BuildDataPt : <<include>>
+UC_Train ..> UC_FullBuild : <<extend>>
+UC_DemoModel ..> UC_BuildDataPt : <<include>>
+UC_DemoModel ..> UC_FullBuild : <<extend>>
+UC_AppendCsv ..> UC_ImportNeo4j : <<include>>
+UC_AppendCsv ..> UC_Inference : <<extend>>
+UC_Inference ..> UC_BuildDataPt : <<include>>
+UC_Inference ..> UC_LabelFraud : <<include>>
+
+UC_AskQuestion ..> UC_LoadSchema : <<include>>
+UC_AskQuestion ..> UC_GenerateCypher : <<include>>
+UC_GenerateCypher ..> UC_CorrectCypher : <<include>>
+UC_AskQuestion ..> UC_RunCypher : <<include>>
+UC_AskQuestion ..> UC_RenderResult : <<include>>
+UC_SuggestPrompts ..> UC_LoadSchema : <<include>>
+
+Neo4j --> UC_CheckDb
+Neo4j --> UC_CheckSchema
+Neo4j --> UC_ImportNeo4j
+Neo4j --> UC_RunCypher
+Neo4j --> UC_DatasetInfo
+
+CsvLlm --> UC_SuggestTxnId
+CsvLlm --> UC_ClassifySchema
+
+T2C --> UC_GenerateCypher
+T2C --> UC_CorrectCypher
+
+GnnService --> UC_BuildDataPt
+GnnService --> UC_Train
+GnnService --> UC_Inference
+FgnnModel --> UC_DemoModel
+FgnnModel --> UC_Inference
+
+note right of UC_DemoModel
+  Demo mode:
+  - dùng model fgnn_star.pt
+  - target mặc định: is_fraud
+  - không train lại model
+end note
+
+note bottom of UC_Connect
+  Nếu Database Name không tồn tại:
+  hệ thống từ chối kết nối.
+
+  Nếu DB đã có dữ liệu nhưng thiếu
+  schema_[database].txt:
+  hệ thống báo lỗi.
+end note
+
+@enduml

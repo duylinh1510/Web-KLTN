@@ -1,0 +1,88 @@
+@startuml activity_text2cypher
+title Activity Diagram - Hỏi đáp Text2Cypher
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam activity {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+  FontColor #111111
+}
+skinparam activityDiamond {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+}
+skinparam swimlane {
+  BorderColor #111111
+  TitleBackgroundColor #FFFFFF
+  TitleFontColor #111111
+}
+
+|Người dùng|
+start
+:Nhập câu hỏi tự nhiên;
+:Bấm Send;
+
+|Hệ thống|
+:Kiểm tra database có dữ liệu;
+
+if (Database rỗng?) then (Có)
+  |Người dùng|
+  :Hiển thị lỗi\nyêu cầu upload CSV;
+  stop
+else (Không)
+endif
+
+|Hệ thống|
+:Load schema từ cache;
+
+if (Cache miss?) then (Có)
+  |CSDL Neo4j|
+  :Trích xuất schema graph\nvà sample values;
+
+  |Hệ thống|
+  :Lưu schema cache;
+else (Không)
+endif
+
+|Dịch vụ AI/GNN|
+:Generate Cypher lần 1\nvới full schema;
+
+|Hệ thống|
+:Schema linking\ntheo Cypher lần 1;
+
+|Dịch vụ AI/GNN|
+:Generate Cypher lần 2\nvới linked schema;
+
+|Hệ thống|
+:EXPLAIN Cypher;
+
+if (Cypher hợp lệ?) then (Không)
+  |Dịch vụ AI/GNN|
+  :Correct Cypher\ntheo error log;
+
+  |Hệ thống|
+  :Retry self-correction\ntối đa 3 lần;
+endif
+
+if (Sau self-correction vẫn lỗi?) then (Có)
+  |Người dùng|
+  :Hiển thị lỗi sinh Cypher;
+  stop
+else (Không)
+endif
+
+|CSDL Neo4j|
+:Thực thi Cypher cuối cùng;
+
+|Hệ thống|
+:Format records thành graphData\nvà scalar table;
+
+|Người dùng|
+:Hiển thị graph;
+:Hiển thị bảng kết quả;
+:Lưu lịch sử câu hỏi;
+stop
+
+@enduml

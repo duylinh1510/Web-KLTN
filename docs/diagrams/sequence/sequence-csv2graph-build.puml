@@ -1,0 +1,69 @@
+@startuml sequence_csv2graph_build
+title Sequence Diagram - Luồng build CSV2Graph
+
+autonumber
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam defaultFontName Arial
+skinparam ParticipantBorderColor #334155
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam DatabaseBorderColor #0F766E
+skinparam DatabaseBackgroundColor #ECFDF5
+
+actor "Người dùng" as User
+boundary "Frontend\nCsvUploadPanel" as FE
+control "Backend\nCsv2GraphController" as Controller
+control "Csv2GraphService" as Csv2Graph
+control "SchemaLlmService" as SchemaLlm
+control "FeatureService" as Feature
+control "StarGraphService" as StarGraph
+control "CsvOutputService" as CsvOutput
+control "Neo4jIngestService" as Ingest
+database "Neo4j" as Neo4j
+collections "Metadata Cache\n_latest_[database].json" as Meta
+actor "CSV2Graph LLM\n/ Colab API" as Llm
+
+User -> FE: Chọn CSV
+FE -> Controller: POST /csv2graph/suggest-transaction-id
+Controller -> SchemaLlm: suggestTransactionId(headers, samples)
+SchemaLlm -> Llm: Gửi headers + sample values
+Llm --> SchemaLlm: Gợi ý transaction_id
+Controller --> FE: suggestion + uniqueCols
+
+User -> FE: Chọn Transaction ID\nvà bấm Build Graph
+FE -> Controller: POST /csv2graph/run\ntrainMode=false, pretrainedMode=false
+Controller -> Csv2Graph: run(file, dto)
+Csv2Graph -> Meta: loadLatest(database)
+Meta --> Csv2Graph: Không có metadata hoặc DB rỗng
+
+Csv2Graph -> CsvOutput: Lưu input CSV + tạo jobDir
+Csv2Graph -> Csv2Graph: Parse CSV
+Csv2Graph -> SchemaLlm: classify(headers, samples)
+SchemaLlm -> Llm: Suy luận schema CSV
+Llm --> SchemaLlm: node_id, relation_cols, feature_cols
+SchemaLlm --> Csv2Graph: FullSchema
+
+Csv2Graph -> Feature: Chuẩn hóa feature
+Feature --> Csv2Graph: rawRows + encodedRows
+Csv2Graph -> StarGraph: Build star graph edges
+StarGraph --> Csv2Graph: edges
+Csv2Graph -> CsvOutput: Ghi nodes.csv, edges.csv, schema.json
+
+note over Csv2Graph
+  Không train và không demo:
+  không cần targetLabel,
+  không tạo data.pt.
+end note
+
+Csv2Graph -> Ingest: ingest(rawRows, edges, CREATE mode)
+Ingest -> Neo4j: CREATE nodes + relationships
+Neo4j --> Ingest: Số nodes/relationships
+Ingest --> Csv2Graph: ingested stats
+
+Csv2Graph -> Meta: saveLatest(database, metadata)
+Csv2Graph --> Controller: Csv2GraphRunResponse
+Controller --> FE: Build success
+FE --> User: Toast + cập nhật graph preview
+
+@enduml

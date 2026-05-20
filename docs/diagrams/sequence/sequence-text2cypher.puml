@@ -1,0 +1,79 @@
+@startuml sequence_text2cypher
+title Sequence Diagram - Luồng hỏi Text2Cypher
+
+autonumber
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam defaultFontName Arial
+skinparam ParticipantBorderColor #334155
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam DatabaseBorderColor #0F766E
+skinparam DatabaseBackgroundColor #ECFDF5
+
+actor "Người dùng" as User
+boundary "Frontend\nChatBox" as FE
+control "Backend\nGraphController" as GraphController
+control "Text2CypherService" as Text2Cypher
+control "SchemaService" as SchemaService
+control "Neo4jService" as Neo4jService
+actor "Text2Cypher LLM\n/ Colab API" as Llm
+database "Neo4j" as Neo4j
+collections "Schema Cache\nschema_[database].txt" as SchemaCache
+
+User -> FE: Nhập câu hỏi tự nhiên
+FE -> GraphController: POST /graph/query\n{ prompt }
+GraphController -> Text2Cypher: generateCypher(prompt)
+
+Text2Cypher -> Neo4j: MATCH (n) RETURN count(n)
+Neo4j --> Text2Cypher: totalNodes
+
+alt Database rỗng
+  Text2Cypher --> GraphController: Throw BadRequest
+  GraphController --> FE: 400 error
+  FE --> User: Hiển thị lỗi
+else Database có dữ liệu
+  Text2Cypher -> SchemaService: getFullSchema()
+  SchemaService -> SchemaCache: Đọc schema_[database].txt
+
+  alt Cache miss
+    SchemaService -> Neo4jService: getReadSession()
+    Neo4jService -> Neo4j: CALL db.schema.*\nlay sample values
+    Neo4j --> SchemaService: schema string
+    SchemaService -> SchemaCache: Lưu schema cache
+  else Cache hit
+    SchemaCache --> SchemaService: schema string
+  end
+
+  SchemaService --> Text2Cypher: full schema
+  Text2Cypher -> Llm: /generate lần 1\nquestion + full schema
+  Llm --> Text2Cypher: cypherV1
+  Text2Cypher -> SchemaService: filterSchemaByQuery(cypherV1)
+  SchemaService --> Text2Cypher: linked schema
+  Text2Cypher -> Llm: /generate lần 2\nquestion + linked schema
+  Llm --> Text2Cypher: cypherV2
+
+  loop Tối đa 3 lần self-correct
+    Text2Cypher -> Neo4jService: EXPLAIN cypher
+    Neo4jService -> Neo4j: EXPLAIN
+    alt Cypher hợp lệ
+      Neo4j --> Neo4jService: OK
+      Neo4jService --> Text2Cypher: success
+    else Cypher lỗi
+      Neo4j --> Neo4jService: error
+      Neo4jService --> Text2Cypher: error log
+      Text2Cypher -> Llm: /correct\nquestion + schema + error
+      Llm --> Text2Cypher: corrected cypher
+    end
+  end
+
+  Text2Cypher --> GraphController: finalCypher
+  GraphController -> Neo4jService: getReadSession()
+  Neo4jService -> Neo4j: RUN finalCypher
+  Neo4j --> GraphController: records
+  GraphController -> GraphController: formatRecords()
+  GraphController --> FE: graphData + scalars + cypher
+  FE --> User: Hiển thị graph và bảng kết quả
+end
+
+@enduml

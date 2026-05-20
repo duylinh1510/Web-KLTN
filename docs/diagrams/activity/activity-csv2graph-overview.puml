@@ -1,0 +1,107 @@
+@startuml activity_csv2graph_overview
+title Activity Diagram - CSV to Graph tổng quát
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam activity {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+  FontColor #111111
+}
+skinparam activityDiamond {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+}
+skinparam swimlane {
+  BorderColor #111111
+  TitleBackgroundColor #FFFFFF
+  TitleFontColor #111111
+}
+
+|Người dùng|
+start
+:Chọn file CSV;
+
+|Hệ thống|
+:Đọc headers CSV;
+:Gọi API gợi ý Transaction ID;
+
+|Dịch vụ AI/GNN|
+:LLM phân tích headers\nvà sample values;
+:Trả về cột transaction_id gợi ý;
+
+|Người dùng|
+:Chọn Transaction ID;
+:Chọn tùy chọn build;
+
+|Hệ thống|
+if (Train model sau build?) then (Có)
+  :Hiển thị dropdown Target Feature;
+  |Người dùng|
+  :Chọn target feature;
+  |Hệ thống|
+else (Không)
+  if (Dùng model demo có sẵn?) then (Có)
+    :Set target mặc định is_fraud;
+    :Tắt train mode;
+  else (Không)
+    :Không gửi targetLabel;
+    :Chạy ingest-only;
+  endif
+endif
+
+:Gửi request /csv2graph/run;
+:Đọc metadata hiện tại;
+
+|CSDL Neo4j|
+:Đếm node trong database;
+
+|Hệ thống|
+if (Dataset đã có dữ liệu?) then (Có)
+  :Chuyển sang APPEND mode;
+  :Validate CSV theo raw metadata;
+else (Không)
+  :Chuyển sang FULL BUILD mode;
+  :Parse CSV;
+
+  |Dịch vụ AI/GNN|
+  :LLM suy luận schema CSV;
+
+  |Hệ thống|
+  :Encode features;
+  :Build star graph;
+  :Xuất nodes.csv,\nedges.csv, schema.json;
+
+  if (Có targetLabel?) then (Có)
+    :Tạo preprocessed.csv;
+
+    |Dịch vụ AI/GNN|
+    :Tạo data.pt;
+
+    |Hệ thống|
+    if (Train mode?) then (Có)
+      |Dịch vụ AI/GNN|
+      :Train F-GNN;
+      :Lưu best_model.pt\nvà active model;
+      |Hệ thống|
+    else (Không)
+      :Kiểm tra fgnn_star.pt\nnếu là demo mode;
+    endif
+  else (Không)
+    :Bỏ qua data.pt;
+  endif
+
+  |CSDL Neo4j|
+  :Import graph vào Neo4j;
+
+  |Hệ thống|
+  :Lưu metadata dataset\nvà schema;
+endif
+
+|Người dùng|
+:Nhận thông báo build thành công;
+:Xem graph preview\nvà dataset info;
+stop
+
+@enduml

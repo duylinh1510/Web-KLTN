@@ -1,0 +1,92 @@
+@startuml activity_append_inference
+title Activity Diagram - Append CSV và inference fraud
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam activity {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+  FontColor #111111
+}
+skinparam activityDiamond {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+}
+skinparam swimlane {
+  BorderColor #111111
+  TitleBackgroundColor #FFFFFF
+  TitleFontColor #111111
+}
+
+|Người dùng|
+start
+:Upload CSV append;
+
+|Hệ thống|
+:Load _latest_[database].json;
+:Load _raw_[database].json;
+
+|CSDL Neo4j|
+:Đếm node hiện có;
+
+|Hệ thống|
+if (Có metadata và DB có dữ liệu?) then (Không)
+  :Chuyển sang full build;
+  stop
+else (Có)
+endif
+
+:Parse CSV append;
+:Validate headers\ntheo raw columns;
+
+if (CSV có cột is_fraud?) then (Có)
+  if (Tất cả dòng đều có nhãn?) then (Có)
+    :Dùng nhãn có sẵn;
+    :Không chạy inference;
+    :Đánh dấu dữ liệu\nđã có nhãn;
+  else (Không)
+    :Trả lỗi target thiếu một phần;
+    :Dừng xử lý append;
+    |Người dùng|
+    :Hiển thị lỗi upload;
+    stop
+  endif
+else (Không)
+  :Chưa có nhãn is_fraud\ntrong file append;
+  :Đánh dấu cần inference;
+endif
+
+if (File append chưa có nhãn?) then (Có)
+  if (Dataset có model usable?) then (Có)
+    :Encode data mới\ntheo schema cũ;
+
+    |Dịch vụ AI/GNN|
+    :Tạo data.pt cho inference;
+    :Load fgnn_star.pt;
+    :Predict fraud scores;
+
+    |Hệ thống|
+    :Gán nhãn is_fraud\ncho từng dòng append;
+  else (Không)
+    :Không inference fraud;
+    :Chỉ ingest dữ liệu mới;
+  endif
+else (Không)
+  :Giữ nguyên nhãn is_fraud\nđã có trong CSV;
+endif
+
+:Build edges cho dữ liệu append;
+
+|CSDL Neo4j|
+:MERGE nodes và relationships;
+
+|Hệ thống|
+:Tạo response append;
+
+|Người dùng|
+:Xem kết quả append;
+:Xem số fraud dự đoán\nnếu có inference;
+stop
+
+@enduml

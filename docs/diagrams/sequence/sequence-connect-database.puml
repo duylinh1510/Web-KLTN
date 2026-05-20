@@ -1,0 +1,56 @@
+@startuml sequence_connect_database
+title Sequence Diagram - Luồng connect database
+
+autonumber
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam defaultFontName Arial
+skinparam ParticipantBorderColor #334155
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam DatabaseBorderColor #0F766E
+skinparam DatabaseBackgroundColor #ECFDF5
+
+actor "Người dùng" as User
+boundary "Frontend\nConnectForm" as FE
+control "Backend\nNeo4jController" as Controller
+control "Neo4jService" as Neo4jService
+database "Neo4j DBMS" as Neo4j
+collections "Schema Cache\nschema_[database].txt" as SchemaCache
+
+User -> FE: Nhập URI, user, password,\nDatabase Name
+FE -> Controller: POST /neo4j/connect
+Controller -> Neo4jService: connect(uri, user, password, database)
+Neo4jService -> Neo4j: Tạo driver + getServerInfo()
+Neo4j --> Neo4jService: Kết nối hợp lệ
+
+Neo4jService -> Neo4j: SHOW DATABASES
+Neo4j --> Neo4jService: Danh sách database online
+
+alt Database Name không tồn tại
+  Neo4jService --> Controller: Throw BadRequest
+  Controller --> FE: 400 error
+  FE --> User: Hiển thị modal lỗi
+else Database Name hợp lệ
+  Neo4jService -> Neo4j: MATCH (n) RETURN count(n)
+  Neo4j --> Neo4jService: totalNodes
+
+  alt DB có dữ liệu
+    Neo4jService -> SchemaCache: Kiểm tra schema_[database].txt
+    alt Thiếu schema cache
+      Neo4jService --> Controller: Throw BadRequest
+      Controller --> FE: 400 error
+      FE --> User: Hiển thị modal lỗi
+    else Có schema cache
+      Neo4jService --> Controller: Connected
+      Controller --> FE: 200 success
+      FE --> User: Cập nhật trạng thái kết nối
+    end
+  else DB rỗng
+    Neo4jService --> Controller: Connected
+    Controller --> FE: 200 success
+    FE --> User: Bắt đầu luồng build mới
+  end
+end
+
+@enduml
