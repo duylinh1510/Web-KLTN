@@ -1,28 +1,28 @@
 # Backend KLTN - Fraud Detection Graph Platform
 
-Backend NestJS dong vai tro **orchestrator** cho he thong phat hien gian lan giao dich tren graph. Backend khong truc tiep train LLM/GNN nang, ma dieu phoi cac service:
+Backend NestJS đóng vai trò **orchestrator** cho hệ thống phát hiện gian lận giao dịch trên graph. Backend không trực tiếp train LLM/GNN nặng, mà điều phối các service:
 
-- React frontend gui request.
-- NestJS validate, quan ly metadata, goi service phu va import Neo4j.
-- Colab/ngrok CSV2Graph LLM suy luan schema CSV.
-- Python sidecar local build `data.pt` va train F-GNN.
-- Python GNN service local load `fgnn_star.pt` va inference.
-- Neo4j luu graph va chay Cypher.
+- React frontend gửi request.
+- NestJS validate, quản lý metadata, gọi service phụ và import Neo4j.
+- Colab/ngrok CSV2Graph LLM suy luận schema CSV.
+- Python sidecar local build `data.pt` và train F-GNN.
+- Python GNN service local load `fgnn_star.pt` và inference.
+- Neo4j lưu graph và chạy Cypher.
 
-## 1. Trang thai hien tai
+## 1. Trạng Thái Hiện Tại
 
-| Luong | Trang thai | Module chinh |
+| Luồng | Trạng thái | Module chính |
 | --- | --- | --- |
-| Ket noi Neo4j bang Database Name | Da co | `src/neo4j/` |
-| CSV to Graph full build | Da co | `src/csv2graph/` |
-| Append CSV theo schema da luu | Da co | `src/csv2graph/` |
-| Train F-GNN sau build | Da co | `GnnTrainService` + `csvtograph_sidecar.py` |
-| Demo mode dung `fgnn_star.pt` | Da co | `pretrainedMode` |
-| Append + F-GNN inference | Da co | `GnnInferenceService` + `gnn_service.py` |
-| Text2Cypher + self-correction | Da co | `src/text2cypher/`, `src/graph/` |
-| Suggested fraud prompts theo schema | Da co | `SchemaService.getSuggestedFraudPrompts()` |
+| Kết nối Neo4j bằng Database Name | Đã có | `src/neo4j/` |
+| CSV to Graph full build | Đã có | `src/csv2graph/` |
+| Append CSV theo schema đã lưu | Đã có | `src/csv2graph/` |
+| Train F-GNN sau build | Đã có | `GnnTrainService` + `csvtograph_sidecar.py` |
+| Demo mode dùng `fgnn_star.pt` | Đã có | `pretrainedMode` |
+| Append + F-GNN inference | Đã có | `GnnInferenceService` + `gnn_service.py` |
+| Text2Cypher + self-correction | Đã có | `src/text2cypher/`, `src/graph/` |
+| Suggested fraud prompts theo schema | Đã có | `SchemaService.getSuggestedFraudPrompts()` |
 
-## 2. Kien truc tong quan
+## 2. Kiến Trúc Tổng Quan
 
 ```text
 React FE :5173
@@ -32,7 +32,7 @@ React FE :5173
 NestJS Backend :3000
   |
   |-- Neo4j bolt://localhost:7687
-  |     - luu Transaction / MerchantNode / CategoryNode / ...
+  |     - lưu Transaction / MerchantNode / CategoryNode / ...
   |
   |-- CSV2Graph LLM Colab/ngrok
   |     - POST /classify-schema
@@ -51,31 +51,31 @@ NestJS Backend :3000
         - POST /predict-data-pt
 ```
 
-Phan vai:
+Phân vai:
 
-| Thanh phan | Vai tro |
+| Thành phần | Vai trò |
 | --- | --- |
-| `frontend-kltn` | UI ket noi Neo4j, upload CSV, xem graph, dat cau hoi |
-| `backend-kltn` | Orchestrator: validate, goi LLM/GNN, luu metadata, import Neo4j |
+| `frontend-kltn` | UI kết nối Neo4j, upload CSV, xem graph, đặt câu hỏi |
+| `backend-kltn` | Orchestrator: validate, gọi LLM/GNN, lưu metadata, import Neo4j |
 | `python-services/csvtograph_sidecar.py` | Build `data.pt`, train F-GNN |
-| `python-services/gnn_service.py` | Load active model va inference append data |
-| `python-services/colab/csv2graph_colab.py` | API LLM suy schema CSV tren Colab |
-| `Text2Cypher/...py` | API LLM sinh/sua Cypher tren Colab |
-| Neo4j | Luu graph va chay Cypher |
+| `python-services/gnn_service.py` | Load active model và inference append data |
+| `python-services/colab/csv2graph_colab.py` | API LLM suy schema CSV trên Colab |
+| `Text2Cypher/...py` | API LLM sinh/sửa Cypher trên Colab |
+| Neo4j | Lưu graph và chạy Cypher |
 
-## 3. Database Name va schema cache
+## 3. Database Name Và Schema Cache
 
-He thong hien khong con dung `dbId` rieng. Truong `database` nguoi dung nhap tren UI chinh la **database name that trong Neo4j instance**, vi du `neo4j`.
+Hệ thống hiện không còn dùng `dbId` riêng. Trường `database` người dùng nhập trên UI chính là **database name thật trong Neo4j instance**, ví dụ `neo4j`.
 
 Khi connect:
 
-1. Backend tao Neo4j driver.
-2. Goi `SHOW DATABASES` de lay database online.
-3. Neu Neo4j Community khong ho tro `SHOW DATABASES`, fallback chi cho `neo4j`.
-4. Neu database khong ton tai hoac khong online thi reject connect.
-5. Neu database co data nhung thieu `data/schemas/schema_<database>.txt` thi reject connect.
-6. Neu database rong thi connect thanh cong va bat dau luong full build moi.
-7. Neu database co data va co schema cache thi app hoat dong binh thuong.
+1. Backend tạo Neo4j driver.
+2. Gọi `SHOW DATABASES` để lấy database online.
+3. Nếu Neo4j Community không hỗ trợ `SHOW DATABASES`, fallback chỉ cho `neo4j`.
+4. Nếu database không tồn tại hoặc không online thì reject connect.
+5. Nếu database có data nhưng thiếu `data/schemas/schema_<database>.txt` thì reject connect.
+6. Nếu database rỗng thì connect thành công và bắt đầu luồng full build mới.
+7. Nếu database có data và có schema cache thì app hoạt động bình thường.
 
 File local theo database name:
 
@@ -85,7 +85,7 @@ backend-kltn/data/csv2graph/_latest_<database>.json
 backend-kltn/data/csv2graph/_raw_<database>.json
 ```
 
-Vi du database `neo4j`:
+Ví dụ database `neo4j`:
 
 ```text
 data/schemas/schema_neo4j.txt
@@ -93,87 +93,87 @@ data/csv2graph/_latest_neo4j.json
 data/csv2graph/_raw_neo4j.json
 ```
 
-## 4. Luong CSV2Graph
+## 4. Luồng CSV2Graph
 
-### 4.1. Full build khi database rong
+### 4.1. Full Build Khi Database Rỗng
 
-Khi Neo4j database rong, `POST /csv2graph/run` chay `fullBuild()`.
+Khi Neo4j database rỗng, `POST /csv2graph/run` chạy `fullBuild()`.
 
-Co 3 che do:
+Có 3 chế độ:
 
-| Che do | Request | Ket qua |
+| Chế độ | Request | Kết quả |
 | --- | --- | --- |
-| Build graph binh thuong | `trainMode=false`, `pretrainedMode=false` | LLM suy schema, tao nodes/edges/schema, import Neo4j. Khong tao `data.pt`. |
-| Train model sau build | `trainMode=true`, co `targetLabel` | Tao `data.pt`, train F-GNN truoc khi import Neo4j, luu `best_model.pt`, copy active model. |
-| Demo model co san | `pretrainedMode=true` | Bat buoc co cot `is_fraud`, tao `data.pt`, khong train, dung active model `fgnn_star.pt`, metadata `hasModel=true`. |
+| Build graph bình thường | `trainMode=false`, `pretrainedMode=false` | LLM suy schema, tạo nodes/edges/schema, import Neo4j. Không tạo `data.pt`. |
+| Train model sau build | `trainMode=true`, có `targetLabel` | Tạo `data.pt`, train F-GNN trước khi import Neo4j, lưu `best_model.pt`, copy active model. |
+| Demo model có sẵn | `pretrainedMode=true` | Bắt buộc có cột `is_fraud`, tạo `data.pt`, không train, dùng active model `fgnn_star.pt`, metadata `hasModel=true`. |
 
-Thu tu chinh:
+Thứ tự chính:
 
 1. Parse CSV.
-2. Goi Colab `/classify-schema`.
-3. Dam bao `node_id`.
-4. Tien xu ly feature:
-   - numeric/bool chuyen ve float;
-   - categorical dung Target Encoding neu co target;
-   - fallback Frequency Encoding neu khong co target.
-5. Tao star edges tu `relation_cols`.
+2. Gọi Colab `/classify-schema`.
+3. Đảm bảo `node_id`.
+4. Tiền xử lý feature:
+   - numeric/bool chuyển về float;
+   - categorical dùng Target Encoding nếu có target;
+   - fallback Frequency Encoding nếu không có target.
+5. Tạo star edges từ `relation_cols`.
 6. Ghi `nodes.csv`, `edges.csv`, `schema.json`.
-7. Neu co target label thi ghi `preprocessed.csv` va goi sidecar `/build-data-pt`.
-8. Neu `trainMode=true` thi goi `/train-fgnn` truoc khi import Neo4j.
-9. Import Neo4j bang `CREATE` cho transaction nodes vi database rong.
-10. Luu `_latest_<database>.json` va `_raw_<database>.json`.
+7. Nếu có target label thì ghi `preprocessed.csv` và gọi sidecar `/build-data-pt`.
+8. Nếu `trainMode=true` thì gọi `/train-fgnn` trước khi import Neo4j.
+9. Import Neo4j bằng `CREATE` cho transaction nodes vì database rỗng.
+10. Lưu `_latest_<database>.json` và `_raw_<database>.json`.
 
-### 4.2. Append khi database da co data
+### 4.2. Append Khi Database Đã Có Data
 
-Khi database da co data va co metadata, `POST /csv2graph/run` chay `appendBuild()`.
+Khi database đã có data và có metadata, `POST /csv2graph/run` chạy `appendBuild()`.
 
-Append khong goi LLM suy schema lai. He thong dung schema canonical da luu tu full build de dam bao du lieu moi tuong thich voi dataset va model cu.
+Append không gọi LLM suy schema lại. Hệ thống dùng schema canonical đã lưu từ full build để đảm bảo dữ liệu mới tương thích với dataset và model cũ.
 
-Thu tu chinh:
+Thứ tự chính:
 
 1. Parse CSV append.
-2. Lay target label tu metadata.
-3. Kiem tra trang thai cot target:
-   - Co target va tat ca dong co nhan: bo qua inference.
-   - Co target nhung mot phan dong trong: bao loi.
-   - Khong co target va dataset co model usable: chay inference.
-   - Khong co target va dataset khong co model: chi ingest neu schema hop le.
-4. Doc `_raw_<database>.json` de validate headers goc.
+2. Lấy target label từ metadata.
+3. Kiểm tra trạng thái cột target:
+   - Có target và tất cả dòng có nhãn: bỏ qua inference.
+   - Có target nhưng một phần dòng trống: báo lỗi.
+   - Không có target và dataset có model usable: chạy inference.
+   - Không có target và dataset không có model: chỉ ingest nếu schema hợp lệ.
+4. Đọc `_raw_<database>.json` để validate headers gốc.
 5. Check duplicate `node_id` trong Neo4j.
-6. Tao edges theo `relation_cols` da luu.
-7. Neu can inference:
-   - encode bang schema da luu;
+6. Tạo edges theo `relation_cols` đã lưu.
+7. Nếu cần inference:
+   - encode bằng schema đã lưu;
    - build `data.pt` mode `inference`;
-   - goi GNN `/reload`;
-   - goi GNN `/predict-data-pt`;
-   - gan `is_fraud` vao row truoc khi import Neo4j.
-8. Import Neo4j bang `MERGE` de tranh trung node/relationship.
+   - gọi GNN `/reload`;
+   - gọi GNN `/predict-data-pt`;
+   - gán `is_fraud` vào row trước khi import Neo4j.
+8. Import Neo4j bằng `MERGE` để tránh trùng node/relationship.
 
-Luu y hieu nang:
+Lưu ý hiệu năng:
 
-- Full build nhanh hon append vi full build dung `CREATE`.
-- Append dung `MERGE`, check duplicate va co the chay inference nen thuong lau hon.
-- Neu file append da co `is_fraud` day du thi khong chay inference.
+- Full build nhanh hơn append vì full build dùng `CREATE`.
+- Append dùng `MERGE`, check duplicate và có thể chạy inference nên thường lâu hơn.
+- Nếu file append đã có `is_fraud` đầy đủ thì không chạy inference.
 
-## 5. Luong GNN
+## 5. Luồng GNN
 
 ### 5.1. Train F-GNN
 
-Train duoc kich hoat khi frontend tick **Train model sau khi build**.
+Train được kích hoạt khi frontend tick **Train model sau khi build**.
 
-Dieu kien:
+Điều kiện:
 
-- Database dang rong.
-- CSV co cot target user chon, thuong la `is_fraud`.
-- Python sidecar `csvtograph_sidecar.py` dang chay port `8002`.
+- Database đang rỗng.
+- CSV có cột target user chọn, thường là `is_fraud`.
+- Python sidecar `csvtograph_sidecar.py` đang chạy port `8002`.
 
-Backend goi:
+Backend gọi:
 
 ```text
 POST {GNN_TRAIN_URL}/train-fgnn
 ```
 
-Body toi thieu:
+Body tối thiểu:
 
 ```json
 {
@@ -194,23 +194,23 @@ Body toi thieu:
 }
 ```
 
-Neu train loi, backend khong import data vao Neo4j.
+Nếu train lỗi, backend không import data vào Neo4j.
 
-### 5.2. Demo mode dung model co san
+### 5.2. Demo Mode Dùng Model Có Sẵn
 
-Demo mode duoc kich hoat khi frontend tick **Dung model demo co san**.
+Demo mode được kích hoạt khi frontend tick **Dùng model demo có sẵn**.
 
-Dieu kien:
+Điều kiện:
 
-- Database dang rong.
-- CSV full build co cot `is_fraud`.
-- File active model ton tai:
+- Database đang rỗng.
+- CSV full build có cột `is_fraud`.
+- File active model tồn tại:
 
 ```text
 python-services/models/fgnn_star.pt
 ```
 
-Backend khong train lai. Metadata se luu:
+Backend không train lại. Metadata sẽ lưu:
 
 ```json
 {
@@ -220,29 +220,29 @@ Backend khong train lai. Metadata se luu:
 }
 ```
 
-Sau do append file moi khong co `is_fraud` co the chay inference.
+Sau đó append file mới không có `is_fraud` có thể chạy inference.
 
-### 5.3. Append + inference
+### 5.3. Append + Inference
 
-Neu dataset co model usable va file append khong co target label:
+Nếu dataset có model usable và file append không có target label:
 
-1. Backend tao `preprocessed.csv` tu schema da luu.
-2. Goi sidecar `/build-data-pt` mode `inference`.
-3. Goi GNN service `/reload`.
-4. Goi GNN service `/predict-data-pt`.
-5. Gan nhan du doan vao cot target truoc khi import Neo4j.
+1. Backend tạo `preprocessed.csv` từ schema đã lưu.
+2. Gọi sidecar `/build-data-pt` mode `inference`.
+3. Gọi GNN service `/reload`.
+4. Gọi GNN service `/predict-data-pt`.
+5. Gán nhãn dự đoán vào cột target trước khi import Neo4j.
 
-Neu feature dimension khong khop voi model, GNN service se bao loi:
+Nếu feature dimension không khớp với model, GNN service sẽ báo lỗi:
 
 ```text
 Feature dimension mismatch: data has X, model expects Y
 ```
 
-Loi nay dung ve mat ky thuat: model train voi bao nhieu feature thi inference phai co dung bay nhieu feature va dung y nghia feature.
+Lỗi này đúng về mặt kỹ thuật: model train với bao nhiêu feature thì inference phải có đúng bấy nhiêu feature và đúng ý nghĩa feature.
 
 ## 6. Text2Cypher
 
-Endpoint chinh:
+Endpoint chính:
 
 ```text
 POST /graph/query
@@ -250,26 +250,26 @@ POST /graph/query
 
 Flow:
 
-1. Backend kiem tra database co data.
-2. `SchemaService.getFullSchema()` lay schema tu cache hoac Neo4j.
-3. Goi Text2Cypher `/generate` lan 1 voi full schema.
-4. Filter schema theo Cypher lan 1.
-5. Goi `/generate` lan 2 voi linked schema.
-6. Chay `EXPLAIN` de validate Cypher.
-7. Neu loi, goi `/correct` voi error log, lap toi da 3 lan.
-8. Neu pass, chay Cypher bang read session.
-9. Format Neo4j records thanh `graphData` va `scalars`.
+1. Backend kiểm tra database có data.
+2. `SchemaService.getFullSchema()` lấy schema từ cache hoặc Neo4j.
+3. Gọi Text2Cypher `/generate` lần 1 với full schema.
+4. Filter schema theo Cypher lần 1.
+5. Gọi `/generate` lần 2 với linked schema.
+6. Chạy `EXPLAIN` để validate Cypher.
+7. Nếu lỗi, gọi `/correct` với error log, lặp tối đa 3 lần.
+8. Nếu pass, chạy Cypher bằng read session.
+9. Format Neo4j records thành `graphData` và `scalars`.
 
-Self-correction giup giam loi cu phap va sai schema, nhung khong dam bao query dung 100% y nghia cau hoi.
+Self-correction giúp giảm lỗi cú pháp và sai schema, nhưng không đảm bảo query đúng 100% ý nghĩa câu hỏi.
 
-## 7. Yeu cau moi truong
+## 7. Yêu Cầu Môi Trường
 
 - Node.js 18+.
-- Neo4j 5+ local hoac remote.
+- Neo4j 5+ local hoặc remote.
 - Python 3.10+ cho `python-services`.
 - Colab/ngrok cho CSV2Graph LLM.
 - Colab/ngrok cho Text2Cypher LLM.
-- Neu dung GNN local:
+- Nếu dùng GNN local:
   - `torch`
   - `torch-geometric`
   - `pandas`
@@ -277,7 +277,7 @@ Self-correction giup giam loi cu phap va sai schema, nhung khong dam bao query d
   - `fastapi`
   - `uvicorn`
 
-## 8. Cai dat va chay
+## 8. Cài Đặt Và Chạy
 
 ### 8.1. Backend
 
@@ -288,15 +288,15 @@ Copy-Item .env.example .env
 npm run dev
 ```
 
-Backend mac dinh:
+Backend mặc định:
 
 ```text
 http://localhost:3000
 ```
 
-### 8.2. Python CSV2Graph sidecar - port 8002
+### 8.2. Python CSV2Graph Sidecar - Port 8002
 
-Chay service build `data.pt` va train F-GNN:
+Chạy service build `data.pt` và train F-GNN:
 
 ```powershell
 cd python-services
@@ -309,9 +309,9 @@ Health:
 Invoke-RestMethod http://127.0.0.1:8002/health
 ```
 
-### 8.3. Python GNN inference service - port 8001
+### 8.3. Python GNN Inference Service - Port 8001
 
-Chay service load model va inference:
+Chạy service load model và inference:
 
 ```powershell
 cd python-services
@@ -324,29 +324,29 @@ Health:
 Invoke-RestMethod http://127.0.0.1:8001/health
 ```
 
-### 8.4. Thu tu khoi dong de demo
+### 8.4. Thứ Tự Khởi Động Để Demo
 
 1. Start Neo4j database.
-2. Start CSV2Graph Colab/ngrok va cap nhat `CSV2GRAPH_LLM_URL`.
-3. Start Text2Cypher Colab/ngrok va cap nhat `TEXT2CYPHER_URL`.
+2. Start CSV2Graph Colab/ngrok và cập nhật `CSV2GRAPH_LLM_URL`.
+3. Start Text2Cypher Colab/ngrok và cập nhật `TEXT2CYPHER_URL`.
 4. Start `csvtograph_sidecar.py` port `8002`.
-5. Start `gnn_service.py` port `8001` neu demo append inference.
+5. Start `gnn_service.py` port `8001` nếu demo append inference.
 6. Start backend `npm run dev`.
 7. Start frontend `npm run dev`.
 
-## 9. Bien moi truong
+## 9. Biến Môi Trường
 
-| Bien | Y nghia | Mac dinh / vi du |
+| Biến | Ý nghĩa | Mặc định / ví dụ |
 | --- | --- | --- |
 | `PORT` | Port NestJS | `3000` |
-| `TEXT2CYPHER_URL` | Colab/ngrok Text2Cypher API co `/generate`, `/correct` | `https://...ngrok-free.app` |
-| `AI_TIMEOUT_MS` | Timeout goi Text2Cypher | `180000` |
-| `CSV2GRAPH_LLM_URL` | Colab/ngrok CSV2Graph LLM co `/classify-schema`, `/suggest-transaction-id` | `https://...ngrok-free.app` |
-| `CSV2GRAPH_TIMEOUT_MS` | Timeout goi CSV2Graph LLM | `300000` |
+| `TEXT2CYPHER_URL` | Colab/ngrok Text2Cypher API có `/generate`, `/correct` | `https://...ngrok-free.app` |
+| `AI_TIMEOUT_MS` | Timeout gọi Text2Cypher | `180000` |
+| `CSV2GRAPH_LLM_URL` | Colab/ngrok CSV2Graph LLM có `/classify-schema`, `/suggest-transaction-id` | `https://...ngrok-free.app` |
+| `CSV2GRAPH_TIMEOUT_MS` | Timeout gọi CSV2Graph LLM | `300000` |
 | `CSV2GRAPH_SIDECAR_URL` | Python sidecar build `data.pt` | `http://127.0.0.1:8002` |
 | `CSV2GRAPH_SIDECAR_TIMEOUT_MS` | Timeout build `data.pt` | `600000` |
 | `CSV2GRAPH_OUTPUT_DIR` | Folder output job | `data/csv2graph` |
-| `CSV2GRAPH_MAX_GROUP_SIZE` | Gioi han so node moi relation group khi build star edges | `500` |
+| `CSV2GRAPH_MAX_GROUP_SIZE` | Giới hạn số node mỗi relation group khi build star edges | `500` |
 | `CSV2GRAPH_NODE_BATCH_SIZE` | Batch size import transaction nodes | `5000` |
 | `CSV2GRAPH_EDGE_BATCH_SIZE` | Batch size import edges | `10000` |
 | `GNN_TRAIN_URL` | Sidecar train endpoint | `http://127.0.0.1:8002` |
@@ -354,9 +354,9 @@ Invoke-RestMethod http://127.0.0.1:8001/health
 | `GNN_INFERENCE_URL` | GNN inference service | `http://127.0.0.1:8001` |
 | `GNN_INFERENCE_TIMEOUT_MS` | Timeout inference | `600000` |
 | `GNN_ACTIVE_MODEL_PATH` | Active model path cho demo/inference | `../python-services/models/fgnn_star.pt` |
-| `GNN_TRAIN_EPOCHS` | So epoch train | `200` |
+| `GNN_TRAIN_EPOCHS` | Số epoch train | `200` |
 | `GNN_HIDDEN_DIM` | Hidden dimension | `64` |
-| `GNN_NUM_LAYERS` | So layer F-GNN | `2` |
+| `GNN_NUM_LAYERS` | Số layer F-GNN | `2` |
 | `GNN_K` | Chebyshev order | `3` |
 | `GNN_DROPOUT` | Dropout | `0.4` |
 | `GNN_LR` | Learning rate | `0.01` |
@@ -366,22 +366,22 @@ Invoke-RestMethod http://127.0.0.1:8001/health
 | `GNN_FANOUT1`, `GNN_FANOUT2` | Neighbor sampling fanout | `20`, `15` |
 | `GNN_MONITOR` | Metric monitor | `f1` |
 
-`AI_PROVIDER` va `AI_BASE_URL` la legacy client trong `src/ai/`; luong Text2Cypher hien tai dung `TEXT2CYPHER_URL`.
+`AI_PROVIDER` và `AI_BASE_URL` là legacy client trong `src/ai/`; luồng Text2Cypher hiện tại dùng `TEXT2CYPHER_URL`.
 
-## 10. API contract
+## 10. API Contract
 
-Moi response thanh cong co dang:
+Mọi response thành công có dạng:
 
 ```json
 { "status": "success" }
 ```
 
-Moi loi duoc `AllExceptionsFilter` chuan hoa:
+Mọi lỗi được `AllExceptionsFilter` chuẩn hóa:
 
 ```json
 {
   "status": "error",
-  "message": "Loi...",
+  "message": "Lỗi...",
   "statusCode": 400
 }
 ```
@@ -404,7 +404,7 @@ Response:
 ```json
 {
   "status": "success",
-  "message": "Da ket noi toi bolt://localhost:7687, database: neo4j",
+  "message": "Đã kết nối tới bolt://localhost:7687, database: neo4j",
   "database": "neo4j"
 }
 ```
@@ -412,7 +412,7 @@ Response:
 #### `POST /neo4j/disconnect`
 
 ```json
-{ "status": "success", "message": "Da ngat ket noi" }
+{ "status": "success", "message": "Đã ngắt kết nối" }
 ```
 
 #### `GET /neo4j/status`
@@ -428,7 +428,7 @@ Response:
 
 #### `GET /neo4j/databases`
 
-Tra danh sach database online, loai `system`.
+Trả danh sách database online, loại `system`.
 
 #### `POST /neo4j/switch-database`
 
@@ -436,7 +436,7 @@ Tra danh sach database online, loai `system`.
 { "database": "neo4j" }
 ```
 
-Switch database cung validate database name va schema/data nhu connect.
+Switch database cũng validate database name và schema/data như connect.
 
 ### 10.2. CSV2Graph
 
@@ -444,19 +444,19 @@ Switch database cung validate database name va schema/data nhu connect.
 
 `multipart/form-data`
 
-| Field | Bat buoc | Ghi chu |
+| Field | Bắt buộc | Ghi chú |
 | --- | --- | --- |
-| `file` | Co | CSV upload |
-| `targetLabel` | Chi khi train | Demo mode mac dinh `is_fraud` |
-| `transactionIdCol` | Khong | User override cot ID |
-| `nodeLabel` | Khong | Mac dinh `Transaction` |
-| `trainMode` | Khong | `true` de train F-GNN sau build |
-| `pretrainedMode` | Khong | `true` de dung `fgnn_star.pt` |
-| `maxGroupSize` | Khong | Cap relation group |
-| `trainRatio`, `valRatio`, `seed` | Khong | Split cho `data.pt` |
-| `ingestNeo4j` | Khong | Mac dinh `true` |
+| `file` | Có | CSV upload |
+| `targetLabel` | Chỉ khi train | Demo mode mặc định `is_fraud` |
+| `transactionIdCol` | Không | User override cột ID |
+| `nodeLabel` | Không | Mặc định `Transaction` |
+| `trainMode` | Không | `true` để train F-GNN sau build |
+| `pretrainedMode` | Không | `true` để dùng `fgnn_star.pt` |
+| `maxGroupSize` | Không | Cap relation group |
+| `trainRatio`, `valRatio`, `seed` | Không | Split cho `data.pt` |
+| `ingestNeo4j` | Không | Mặc định `true` |
 
-Response rut gon:
+Response rút gọn:
 
 ```json
 {
@@ -509,11 +509,11 @@ Response rut gon:
 }
 ```
 
-`training`, `pretrained`, `inference` la optional tuy theo mode.
+`training`, `pretrained`, `inference` là optional tùy theo mode.
 
 #### `GET /csv2graph/dataset-info`
 
-Tra dataset hien tai cua database active:
+Trả dataset hiện tại của database active:
 
 ```json
 {
@@ -530,9 +530,9 @@ Tra dataset hien tai cua database active:
 
 #### `POST /csv2graph/suggest-transaction-id`
 
-`multipart/form-data` voi `file`.
+`multipart/form-data` với `file`.
 
-Tra:
+Trả:
 
 ```json
 {
@@ -571,15 +571,15 @@ Response:
 
 #### `GET /graph/preview`
 
-Tra graph preview cho UI sau khi dataset co data.
+Trả graph preview cho UI sau khi dataset có data.
 
 #### `GET /graph/suggested-prompts`
 
-Sinh prompt goi y dua tren schema hien tai, uu tien cac cau hoi lien quan fraud.
+Sinh prompt gợi ý dựa trên schema hiện tại, ưu tiên các câu hỏi liên quan fraud.
 
-## 11. Output files
+## 11. Output Files
 
-Moi job CSV2Graph tao folder:
+Mỗi job CSV2Graph tạo folder:
 
 ```text
 backend-kltn/data/csv2graph/<jobId>/
@@ -587,9 +587,9 @@ backend-kltn/data/csv2graph/<jobId>/
   nodes.csv
   edges.csv
   schema.json
-  preprocessed.csv       # chi co khi co targetLabel / train / demo / inference
-  data.pt                # chi co khi build data.pt
-  best_model.pt          # chi co khi train thanh cong
+  preprocessed.csv       # chỉ có khi có targetLabel / train / demo / inference
+  data.pt                # chỉ có khi build data.pt
+  best_model.pt          # chỉ có khi train thành công
 ```
 
 Metadata theo database:
@@ -600,7 +600,7 @@ backend-kltn/data/csv2graph/_raw_<database>.json
 backend-kltn/data/schemas/schema_<database>.txt
 ```
 
-## 12. Thu muc source
+## 12. Thư Mục Source
 
 ```text
 src/
@@ -636,16 +636,16 @@ src/
     legacy AI provider wrapper
 ```
 
-## 13. Test nhanh
+## 13. Test Nhanh
 
-### 13.1. Build backend
+### 13.1. Build Backend
 
 ```powershell
 cd backend-kltn
 npm run build
 ```
 
-### 13.2. Kiem tra database rong
+### 13.2. Kiểm Tra Database Rỗng
 
 Trong Neo4j Browser:
 
@@ -653,29 +653,29 @@ Trong Neo4j Browser:
 MATCH (n) RETURN count(n) AS totalNodes
 ```
 
-Neu `totalNodes = 0`, frontend se o Full Build mode va co the hien:
+Nếu `totalNodes = 0`, frontend sẽ ở Full Build mode và có thể hiện:
 
 - `Train model sau khi build`
-- `Dung model demo co san`
+- `Dùng model demo có sẵn`
 
-Neu frontend hien append mode, hay refetch dataset-info hoac reconnect Neo4j.
+Nếu frontend hiện append mode, hãy refetch dataset-info hoặc reconnect Neo4j.
 
-### 13.3. Demo khuyen nghi
+### 13.3. Demo Khuyến Nghị
 
-Neu file goc 260MB da tach:
+Nếu file gốc 260MB đã tách:
 
 1. Full build part 1.
-2. Neu muon demo inference, nen dung demo mode voi model `fgnn_star.pt`.
-3. Append part 2 nho, vi append 130MB se lau hon full build.
-4. Neu part 2 da co `is_fraud` day du thi backend se bo qua inference.
-5. Neu part 2 khong co `is_fraud` va metadata `hasModel=true` thi backend se inference truoc khi import.
+2. Nếu muốn demo inference, nên dùng demo mode với model `fgnn_star.pt`.
+3. Append part 2 nhỏ, vì append 130MB sẽ lâu hơn full build.
+4. Nếu part 2 đã có `is_fraud` đầy đủ thì backend sẽ bỏ qua inference.
+5. Nếu part 2 không có `is_fraud` và metadata `hasModel=true` thì backend sẽ inference trước khi import.
 
-## 14. Luu y va gioi han hien tai
+## 14. Lưu Ý Và Giới Hạn Hiện Tại
 
-- Colab/ngrok co the doi URL, can cap nhat `.env` va restart backend.
-- Train F-GNN tren dataset lon co the mat vai gio, demo nen dung pretrained model.
-- Upload CSV lon hien van ton RAM vi backend parse file vao memory; production nen streaming/chunk.
-- Text2Cypher dung `EXPLAIN` de validate ky thuat, khong dam bao dung 100% y nghia cau hoi.
-- Demo mode phu thuoc schema/model tuong thich. Model train voi 9 features thi inference cung phai co 9 features cung y nghia.
-- He thong hien phu hop demo/local mot nguoi dung. Production multi-user can auth, per-user connection/session va query sandbox read-only.
+- Colab/ngrok có thể đổi URL, cần cập nhật `.env` và restart backend.
+- Train F-GNN trên dataset lớn có thể mất vài giờ, demo nên dùng pretrained model.
+- Upload CSV lớn hiện vẫn tốn RAM vì backend parse file vào memory; production nên streaming/chunk.
+- Text2Cypher dùng `EXPLAIN` để validate kỹ thuật, không đảm bảo đúng 100% ý nghĩa câu hỏi.
+- Demo mode phụ thuộc schema/model tương thích. Model train với 9 features thì inference cũng phải có 9 features cùng ý nghĩa.
+- Hệ thống hiện phù hợp demo/local một người dùng. Production multi-user cần auth, per-user connection/session và query sandbox read-only.
 
