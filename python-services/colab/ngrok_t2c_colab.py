@@ -7,10 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1_5wNKFb3uR-AkKHoWvikT0uBvrd3PX2c
 """
 
-!pip install -q transformers peft bitsandbytes accelerate fastapi uvicorn pyngrok nest-asyncio pydantic
-
-!pip install -q torchao --upgrade
-
 # Commented out IPython magic to ensure Python compatibility.
 # %%capture
 # !pip install --no-cache-dir "unsloth==2025.11.2"
