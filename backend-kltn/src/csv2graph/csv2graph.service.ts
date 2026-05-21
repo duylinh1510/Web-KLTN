@@ -311,6 +311,7 @@ export class Csv2GraphService {
         targetLabel,
         nodeLabel,
         false,  // isAppend=false → dùng CREATE (nhanh hơn MERGE khi DB rỗng)
+        classification.relation_cols,
       );
       stats.ingested = ingested;
       this.logger.log(
@@ -595,6 +596,7 @@ export class Csv2GraphService {
         targetLabel,
         nodeLabel,
         true,   // isAppend=true → dùng MERGE (upsert an toàn)
+        meta.schema.relation_cols,
       );
       stats.ingested = ingested;
       this.logger.log(

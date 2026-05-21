@@ -57,6 +57,7 @@ export class Neo4jIngestService {
     targetLabel: string,
     nodeLabel: string,
     isAppend: boolean = false,
+    relationCols: string[] = [],
   ): Promise<{ nodes: number; relationships: number }> {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nodeLabel)) {
       throw new HttpException(
@@ -72,8 +73,10 @@ export class Neo4jIngestService {
       this.config.get<string>('CSV2GRAPH_EDGE_BATCH_SIZE') ?? 20000,
     );
 
+    const relationTypes = this.resolveRelationTypes(relationCols, edges);
+
     // Bước 0: Đảm bảo index / constraint tồn tại (idempotent)
-    await this.ensureConstraints(nodeLabel, edges);
+    await this.ensureConstraints(nodeLabel, relationTypes);
 
     // Bước 1: Ingest transaction nodes
     const ingestedNodes = await this.ingestTransactionNodes(
@@ -87,11 +90,11 @@ export class Neo4jIngestService {
     );
 
     // Bước 2: Ingest auxiliary nodes + relationships (heterogeneous)
-    const ingestedRels = await this.ingestHeterogeneousEdges(
-      edges,
+    const ingestedRels = await this.ingestHeterogeneousRows(
       rows,
       nodeIdCol,
       nodeLabel,
+      relationTypes,
       edgeBatchSize,
       isAppend,
     );
@@ -114,7 +117,7 @@ export class Neo4jIngestService {
    */
   private async ensureConstraints(
     nodeLabel: string,
-    edges: EdgeRow[],
+    relationTypes: string[],
   ): Promise<void> {
     const session = this.neo4jService.getWriteSession();
     try {
@@ -127,8 +130,7 @@ export class Neo4jIngestService {
       this.logger.log(`  [idx] UNIQUE constraint on :${nodeLabel}(node_id) — OK`);
 
       // Constraints cho mỗi loại Auxiliary node
-      const relTypes = [...new Set(edges.map((e) => String(e.relation_type)))];
-      for (const relType of relTypes) {
+      for (const relType of relationTypes) {
         const auxLabel = this.toAuxNodeLabel(relType);
         const auxConstraint = `constraint_${auxLabel.toLowerCase()}_value`;
         await session.run(
@@ -230,37 +232,33 @@ export class Neo4jIngestService {
    *
    * Auxiliary nodes và edges luôn dùng MERGE (tập unique values nhỏ, cần idempotent).
    */
-  private async ingestHeterogeneousEdges(
-    edges: EdgeRow[],
+  private async ingestHeterogeneousRows(
     rows: CsvRow[],
     nodeIdCol: string,
     nodeLabel: string,
+    relationTypes: string[],
     batchSize: number,
     isAppend: boolean,
   ): Promise<number> {
-    if (edges.length === 0) return 0;
+    if (rows.length === 0 || relationTypes.length === 0) return 0;
 
-    // Nhóm edges theo relation_type để xử lý từng loại riêng
-    const groupedByType = new Map<string, EdgeRow[]>();
-    for (const edge of edges) {
-      const type = String(edge.relation_type);
-      if (!groupedByType.has(type)) groupedByType.set(type, []);
-      groupedByType.get(type)!.push(edge);
-    }
-
+    // Neo4j dùng relation rows từ CSV gốc; star edges chỉ phục vụ data.pt/GNN.
     let totalRels = 0;
 
-    for (const [relType, relEdges] of groupedByType) {
+    for (const relType of relationTypes) {
       const auxLabel = this.toAuxNodeLabel(relType);
       const relTypeName = `HAS_${relType.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+      const relRows = this.buildRelationRows(rows, nodeIdCol, relType);
 
       this.logger.log(
-        `  -> Ingesting ${relEdges.length.toLocaleString()} edges: ` +
+        `  -> Ingesting ${relRows.length.toLocaleString()} raw relation rows: ` +
         `(:${nodeLabel})-[:${relTypeName}]->(:${auxLabel})`,
       );
 
+      if (relRows.length === 0) continue;
+
       // Bước 2a: MERGE auxiliary nodes (unique values — tập nhỏ)
-      const uniqueValues = [...new Set(relEdges.map((e) => String(e.dst_id)))];
+      const uniqueValues = [...new Set(relRows.map((r) => r.value))];
       await this.mergeAuxiliaryNodes(auxLabel, uniqueValues, batchSize);
 
       // Bước 2b: MERGE relationships Transaction → AuxiliaryNode
@@ -268,23 +266,19 @@ export class Neo4jIngestService {
       const relCypher = `
         UNWIND $batch AS r
         MATCH (src:${nodeLabel} {node_id: r.src_id})
-        MATCH (dst:${auxLabel} {value: r.dst_id})
+        MATCH (dst:${auxLabel} {value: r.value})
         MERGE (src)-[:${relTypeName}]->(dst)
       `;
 
       const relSession = this.neo4jService.getWriteSession();
       const relStart = Date.now();
       try {
-        for (let i = 0; i < relEdges.length; i += batchSize) {
-          const slice = relEdges.slice(i, i + batchSize);
-          const batch = slice.map((e) => ({
-            src_id: String(e.src_id),
-            dst_id: String(e.dst_id),
-          }));
+        for (let i = 0; i < relRows.length; i += batchSize) {
+          const batch = relRows.slice(i, i + batchSize);
           await relSession.executeWrite((tx) => tx.run(relCypher, { batch }));
-          totalRels += slice.length;
+          totalRels += batch.length;
           this.logger.log(
-            `  -> [${relTypeName}] ${Math.min(i + batchSize, relEdges.length)}/${relEdges.length}`,
+            `  -> [${relTypeName}] ${Math.min(i + batchSize, relRows.length)}/${relRows.length}`,
           );
         }
       } finally {
@@ -341,5 +335,46 @@ export class Neo4jIngestService {
       .map((s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
       .join('');
     return `${pascal}Node`;
+  }
+
+  private resolveRelationTypes(
+    relationCols: string[],
+    edges: EdgeRow[],
+  ): string[] {
+    const fromSchema = relationCols
+      .map((c) => String(c).trim())
+      .filter(Boolean);
+    if (fromSchema.length > 0) return [...new Set(fromSchema)];
+
+    return [
+      ...new Set(
+        edges
+          .map((e) => String(e.relation_type).trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  private buildRelationRows(
+    rows: CsvRow[],
+    nodeIdCol: string,
+    relType: string,
+  ): Array<{ src_id: string; value: string }> {
+    const relationRows: Array<{ src_id: string; value: string }> = [];
+
+    for (const row of rows) {
+      const srcId = this.normalizeRelationValue(row[nodeIdCol]);
+      const value = this.normalizeRelationValue(row[relType]);
+      if (!srcId || !value) continue;
+      relationRows.push({ src_id: srcId, value });
+    }
+
+    return relationRows;
+  }
+
+  private normalizeRelationValue(value: unknown): string | null {
+    if (value === null || value === undefined) return null;
+    const s = String(value).trim();
+    return s === '' ? null : s;
   }
 }
