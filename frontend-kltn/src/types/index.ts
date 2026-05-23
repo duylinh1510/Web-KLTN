@@ -118,6 +118,8 @@ export type DatasetInfoResponse = ApiSuccess<{
   columns?: string[];
   targetLabel?: string;
   numNodes?: number;
+  totalGraphNodes?: number;
+  totalGraphRelationships?: number;
   jobId?: string;
   /** true nếu đã train GNN model — FE dùng để hiển thị "Có thể Inference Fraud" */
   hasModel?: boolean;

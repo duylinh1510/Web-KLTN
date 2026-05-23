@@ -317,7 +317,8 @@ export class Neo4jService implements OnModuleDestroy {
       const cypher = response.data.cypher.replace(/\\n/g, '\n');
       return cypher;
     } catch (error) {
-      console.error('Lỗi khi gọi Colab API:', error.message);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Lỗi khi gọi Colab API:', message);
       throw new HttpException(
         'Không thể kết nối đến AI Service',
         HttpStatus.INTERNAL_SERVER_ERROR,

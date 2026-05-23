@@ -11,6 +11,8 @@ type DatasetState = {
   columns: string[];
   targetLabel: string | null;
   numNodes: number;
+  totalGraphNodes: number;
+  totalGraphRelationships: number;
   jobId: string | null;
   /**
    * true = đã train GNN model (data.pt tồn tại).
@@ -28,6 +30,8 @@ type DatasetActions = {
     columns?: string[];
     targetLabel?: string;
     numNodes?: number;
+    totalGraphNodes?: number;
+    totalGraphRelationships?: number;
     jobId?: string;
     hasModel?: boolean;
   }) => void;
@@ -40,6 +44,8 @@ const initialState: DatasetState = {
   columns: [],
   targetLabel: null,
   numNodes: 0,
+  totalGraphNodes: 0,
+  totalGraphRelationships: 0,
   jobId: null,
   hasModel: false,
 };
@@ -54,6 +60,10 @@ export const useDatasetStore = create<DatasetState & DatasetActions>()((set) => 
       columns: payload.hasData ? (payload.columns ?? []) : [],
       targetLabel: payload.hasData ? (payload.targetLabel ?? null) : null,
       numNodes: payload.hasData ? (payload.numNodes ?? 0) : 0,
+      totalGraphNodes: payload.hasData ? (payload.totalGraphNodes ?? 0) : 0,
+      totalGraphRelationships: payload.hasData
+        ? (payload.totalGraphRelationships ?? 0)
+        : 0,
       jobId: payload.hasData ? (payload.jobId ?? null) : null,
       hasModel: payload.hasData ? (payload.hasModel ?? false) : false,
     }),

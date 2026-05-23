@@ -34,6 +34,8 @@ export function useDatasetInfo() {
         columns: query.data.columns,
         targetLabel: query.data.targetLabel,
         numNodes: query.data.numNodes,
+        totalGraphNodes: query.data.totalGraphNodes,
+        totalGraphRelationships: query.data.totalGraphRelationships,
         jobId: query.data.jobId,
         hasModel: query.data.hasModel,
       });

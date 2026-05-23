@@ -17,6 +17,11 @@ import { Csv2GraphRunDto } from './dto/csv2graph-run.dto';
 import { parse } from 'csv-parse/sync';
 import type { CsvRow } from './interfaces/classification-schema.interface';
 
+type UploadedCsvFile = {
+  originalname: string;
+  buffer?: Buffer;
+};
+
 @Controller('csv2graph')
 export class Csv2GraphController {
   constructor(
@@ -35,7 +40,7 @@ export class Csv2GraphController {
     }),
   )
   async run(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedCsvFile | undefined,
     @Body() dto: Csv2GraphRunDto,
   ) {
     if (!file) {
@@ -92,7 +97,7 @@ export class Csv2GraphController {
     FileInterceptor('file', { limits: { fileSize: 500 * 1024 * 1024 } }), // 500 MB
   )
   async suggestTransactionId(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedCsvFile | undefined,
   ) {
     if (!file?.buffer || file.buffer.length === 0) {
       throw new HttpException('Thiếu file CSV', HttpStatus.BAD_REQUEST);

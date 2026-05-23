@@ -510,6 +510,185 @@ Show the graph of fraud transactions connected to merchants
 
 > Query này return `t, r, m`, tức trả node transaction, relationship và merchant node để frontend vẽ graph.
 
+### Bộ Câu Hỏi Demo Nên Chuẩn Bị
+
+Không nhất thiết chạy hết các câu dưới đây trong buổi báo cáo. Nên chọn 3-4 câu tùy thời gian, nhưng cần test trước toàn bộ để có phương án thay thế nếu một câu bị chậm hoặc Colab/ngrok lỗi.
+
+#### Câu 1 - Top category fraud
+
+```text
+List the top 5 categories with the most fraud transactions
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_CATEGORY]->(c:CategoryNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN c.value AS category, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+LIMIT 5
+```
+
+Giải thích khi demo:
+
+> Câu này kiểm tra Text2Cypher có hiểu "category" là `CategoryNode` và dùng relationship `HAS_CATEGORY`. Kết quả cũng chứng minh phần CSV2Graph đã lưu giá trị nghiệp vụ đúng, ví dụ `grocery_pos`, `shopping_net`, chứ không còn lưu nhầm ID số.
+
+#### Câu 2 - Top merchant fraud
+
+```text
+List the top 5 merchants with the most fraud transactions
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN m.value AS merchant, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+LIMIT 5
+```
+
+Giải thích khi demo:
+
+> Câu này dùng để xem merchant nào xuất hiện nhiều trong các giao dịch fraud. Đây là ví dụ tốt để giải thích vì sao graph hữu ích: transaction không chỉ được xem riêng lẻ mà còn được liên kết với merchant.
+
+#### Câu 3 - Top location fraud
+
+```text
+List the top 5 locations with the most fraud transactions
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_STATE]->(s:StateNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN s.value AS location, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+LIMIT 5
+```
+
+Giải thích khi demo:
+
+> Trong domain hiện tại, "location" được hiểu là state/region, nên query phải dùng `StateNode` qua `HAS_STATE`. Đây là edge case đã được bổ sung vào domain rules để model không hiểu nhầm location thành merchant.
+
+#### Câu 4 - Fraud và non-fraud theo category
+
+```text
+Count fraud and non-fraud transactions by category
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_CATEGORY]->(c:CategoryNode)
+RETURN c.value AS category,
+       SUM(CASE WHEN toString(t.is_fraud) = "1" THEN 1 ELSE 0 END) AS fraud_count,
+       SUM(CASE WHEN toString(t.is_fraud) <> "1" THEN 1 ELSE 0 END) AS non_fraud_count
+ORDER BY fraud_count DESC
+```
+
+Giải thích khi demo:
+
+> Câu này phức tạp hơn top-N vì phải đếm cả fraud và non-fraud trong cùng một query. Nó cho thấy hệ thống không chỉ lọc fraud mà còn có thể tạo bảng so sánh theo từng nhóm nghiệp vụ. Lưu ý Cypher không dùng `GROUP BY`; aggregation là tự động.
+
+#### Câu 5 - Fraud theo gender
+
+```text
+Show fraud transactions by gender
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_GENDER]->(g:GenderNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN g.value AS gender, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+```
+
+Giải thích khi demo:
+
+> Đây là câu thống kê đơn giản nhưng dễ hiểu với người nghe. Query group theo `GenderNode` và đếm số giao dịch fraud, giúp kiểm tra thêm một loại auxiliary node khác ngoài merchant/category/state.
+
+#### Câu 6 - Tổng số fraud transactions
+
+```text
+How many transactions are fraud?
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)
+WHERE toString(t.is_fraud) = "1"
+RETURN count(t) AS fraud_transaction_count
+```
+
+Giải thích khi demo:
+
+> Đây là câu sanity check. Nó kiểm tra trực tiếp số lượng transaction fraud trong graph, không cần join sang node phụ. Câu này chạy nhanh và dùng để đối chiếu dữ liệu sau khi import.
+
+#### Câu 7 - Top fraud transactions theo amount
+
+```text
+List the top 10 fraud transactions with the highest amount
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)
+WHERE toString(t.is_fraud) = "1"
+RETURN t.node_id AS transaction_id, t.amt AS amount, t.is_fraud AS is_fraud
+ORDER BY toFloat(t.amt) DESC
+LIMIT 10
+```
+
+Giải thích khi demo:
+
+> Câu này không đi qua auxiliary node mà dùng property trực tiếp của `Transaction`. Nó cho thấy Text2Cypher phân biệt được khi nào cần đi theo relationship và khi nào chỉ cần đọc property trên transaction.
+
+#### Câu 8 - Graph visualization với merchant
+
+```text
+Show the graph of fraud transactions connected to merchants
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[r:HAS_MERCHANT]->(m:MerchantNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN t, r, m
+LIMIT 50
+```
+
+Giải thích khi demo:
+
+> Câu này dùng để chuyển từ table sang graph view. Vì câu hỏi có từ "graph/connected", query phải return node và relationship object là `t, r, m`, không chỉ return scalar như `t.node_id` hay `m.value`.
+
+#### Câu 9 - Fraud theo zip code
+
+```text
+Count fraud transactions by zip code
+```
+
+Cypher kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)
+WHERE toString(t.is_fraud) = "1"
+RETURN t.zip AS zip, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+```
+
+Giải thích khi demo:
+
+> Câu này kiểm tra rule phân biệt "zip/postal code" với "location". Nếu hỏi location thì dùng `StateNode`, nhưng nếu hỏi zip code thì phải dùng property `t.zip` trên `Transaction`.
+
 ### Nếu Colab/ngrok lỗi
 
 Nói ngắn:
@@ -657,7 +836,7 @@ Trả lời:
 - [ ] Text2Cypher ngrok URL còn sống.
 - [ ] `.env` backend đúng URL.
 - [ ] Database đã có data.
-- [ ] 3 câu Text2Cypher đã test trước.
+- [ ] Bộ câu hỏi Text2Cypher demo đã test trước, ưu tiên 3-4 câu chạy ổn nhất.
 - [ ] Có ảnh backup.
 
 ### Tâm lý trình bày

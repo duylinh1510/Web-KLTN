@@ -1,30 +1,49 @@
 import { useDatasetStore } from "../../store/datasetStore";
 
 /**
- * Card hiển thị info dataset hiện tại trong DB (sau khi đã build ít nhất 1 lần).
- * Render khi datasetStore.hasData = true.
+ * Card hiển thị dataset hiện tại trong Neo4j.
+ * numNodes = số node của label dataset chính, không phải tổng toàn graph.
  */
 export function DatasetInfo() {
   const hasData = useDatasetStore((s) => s.hasData);
   const nodeLabel = useDatasetStore((s) => s.nodeLabel);
   const numNodes = useDatasetStore((s) => s.numNodes);
+  const totalGraphNodes = useDatasetStore((s) => s.totalGraphNodes);
+  const totalGraphRelationships = useDatasetStore(
+    (s) => s.totalGraphRelationships,
+  );
   const targetLabel = useDatasetStore((s) => s.targetLabel);
   const columns = useDatasetStore((s) => s.columns);
 
   if (!hasData) return null;
 
+  const datasetLabel = nodeLabel ?? "Dataset";
+
   return (
     <div className="space-y-2 rounded-md border border-emerald-900/60 bg-emerald-950/20 p-3 text-xs">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
-          Dataset trong Neo4j
+          Dataset chính trong Neo4j
         </span>
         <span className="rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200">
-          {numNodes.toLocaleString()} nodes
+          {numNodes.toLocaleString()} {datasetLabel} nodes
         </span>
       </div>
 
       <Row label="Node label" value={nodeLabel ?? "-"} mono />
+      <Row label={`${datasetLabel} nodes`} value={numNodes.toLocaleString()} />
+      <Row
+        label="Tổng graph nodes"
+        value={totalGraphNodes > 0 ? totalGraphNodes.toLocaleString() : "-"}
+      />
+      <Row
+        label="Tổng relationships"
+        value={
+          totalGraphRelationships > 0
+            ? totalGraphRelationships.toLocaleString()
+            : "-"
+        }
+      />
       <Row label="Target label" value={targetLabel ?? "-"} mono />
 
       <div>
@@ -44,7 +63,15 @@ export function DatasetInfo() {
       </div>
 
       <div className="rounded bg-slate-950/40 px-2 py-1.5 text-[10px] leading-relaxed text-slate-400">
-        Khi append: CSV mới phải là <strong>subset</strong> các cột trên — cột thiếu sẽ ingest <span className="font-mono">null</span>, cột thừa sẽ bị reject. Bao gồm cột target.
+        Số <span className="font-mono">{datasetLabel}</span> nodes chỉ đếm node
+        giao dịch chính. Tổng graph nodes/relationships có thể lớn hơn vì Neo4j
+        còn có auxiliary nodes như merchant, category, state, job, gender.
+      </div>
+
+      <div className="rounded bg-slate-950/40 px-2 py-1.5 text-[10px] leading-relaxed text-slate-400">
+        Khi append: CSV mới phải là <strong>subset</strong> các cột trên, cột
+        thiếu sẽ ingest <span className="font-mono">null</span>, cột thừa sẽ bị
+        reject. Bao gồm cột target.
       </div>
     </div>
   );

@@ -45,6 +45,8 @@ export interface DatasetInfo {
   columns?: string[];
   targetLabel?: string;
   numNodes?: number;
+  totalGraphNodes?: number;
+  totalGraphRelationships?: number;
   jobId?: string;
   /** true nếu đã train GNN model — FE dùng để hiển thị "Có thể Inference" */
   hasModel?: boolean;
@@ -159,6 +161,20 @@ export class DatasetMetaService {
     }
   }
 
+  async countAllRelationships(): Promise<number> {
+    const session = this.neo4jService.getReadSession();
+    try {
+      const res = await session.run('MATCH ()-[r]->() RETURN count(r) AS c');
+      const c = res.records[0]?.get('c');
+      return typeof c === 'number' ? c : Number(c?.toNumber?.() ?? c ?? 0);
+    } catch (e: any) {
+      this.logger.warn(`countAllRelationships loi: ${e?.message ?? e}`);
+      return 0;
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
    * Kiểm tra ID trùng: trả về danh sách node_id đã tồn tại trong Neo4j.
    * Query theo batch 500 ID để tránh vượt giới hạn Cypher.
@@ -197,7 +213,12 @@ export class DatasetMetaService {
     const meta = this.loadLatest(database);
     if (!meta) return { hasData: false };
 
-    const numNodes = await this.countNodes(meta.nodeLabel);
+    const [numNodes, totalGraphNodes, totalGraphRelationships] =
+      await Promise.all([
+        this.countNodes(meta.nodeLabel),
+        this.countAllNodes(),
+        this.countAllRelationships(),
+      ]);
     if (numNodes === 0) return { hasData: false };
 
     return {
@@ -206,6 +227,8 @@ export class DatasetMetaService {
       columns: meta.columns,
       targetLabel: meta.targetLabel,
       numNodes,
+      totalGraphNodes,
+      totalGraphRelationships,
       jobId: meta.jobId,
       hasModel: this.modelExists(meta),
     };
