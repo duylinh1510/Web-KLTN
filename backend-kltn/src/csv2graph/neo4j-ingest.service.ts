@@ -73,7 +73,7 @@ export class Neo4jIngestService {
       this.config.get<string>('CSV2GRAPH_EDGE_BATCH_SIZE') ?? 20000,
     );
 
-    const relationTypes = this.resolveRelationTypes(relationCols, edges);
+    const relationTypes = this.resolveRelationTypes(relationCols);
 
     // Bước 0: Đảm bảo index / constraint tồn tại (idempotent)
     await this.ensureConstraints(nodeLabel, relationTypes);
@@ -245,6 +245,16 @@ export class Neo4jIngestService {
     // Neo4j dùng relation rows từ CSV gốc; star edges chỉ phục vụ data.pt/GNN.
     let totalRels = 0;
 
+    const missingRelationCols = relationTypes.filter(
+      (relType) => rows.length > 0 && !(relType in rows[0]),
+    );
+    if (missingRelationCols.length > 0) {
+      throw new HttpException(
+        `Relation column(s) khong ton tai trong raw rows: [${missingRelationCols.join(', ')}]`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     for (const relType of relationTypes) {
       const auxLabel = this.toAuxNodeLabel(relType);
       const relTypeName = `HAS_${relType.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
@@ -337,19 +347,14 @@ export class Neo4jIngestService {
     return `${pascal}Node`;
   }
 
-  private resolveRelationTypes(
-    relationCols: string[],
-    edges: EdgeRow[],
-  ): string[] {
-    const fromSchema = relationCols
-      .map((c) => String(c).trim())
-      .filter(Boolean);
-    if (fromSchema.length > 0) return [...new Set(fromSchema)];
-
+  private resolveRelationTypes(relationCols: string[]): string[] {
+    // Neo4j heterogeneous graph must use raw CSV relation columns only.
+    // Never fallback to star edges from edges.csv: those dst_id values are
+    // transaction IDs for GNN/data.pt and would corrupt auxiliary nodes.
     return [
       ...new Set(
-        edges
-          .map((e) => String(e.relation_type).trim())
+        relationCols
+          .map((c) => String(c).trim())
           .filter(Boolean),
       ),
     ];
