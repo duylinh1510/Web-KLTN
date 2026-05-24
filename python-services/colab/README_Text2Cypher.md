@@ -134,6 +134,33 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 | `do_sample=False` | Sinh kết quả deterministic, giảm độ ngẫu nhiên |
 | `max_new_tokens=256` | Giới hạn số token Cypher sinh ra |
 
+### 5.1. `max_seq_length` Và `max_new_tokens` Có Làm Model Thông Minh Hơn Không?
+
+Hai tham số này **có ảnh hưởng đến chất lượng sinh Cypher**, nhưng không làm model "thông minh hơn" theo nghĩa thay đổi năng lực lõi của model.
+
+`max_seq_length = 4096` là độ dài context tối đa model có thể đọc trong một lần inference. Nó quyết định model có đọc đủ các phần sau hay không:
+
+- schema Neo4j;
+- system prompt;
+- domain semantic rules;
+- few-shot examples;
+- câu hỏi người dùng;
+- error log khi chạy self-correction.
+
+Nếu `max_seq_length` quá thấp, prompt có thể bị cắt mất schema, rule hoặc ví dụ quan trọng. Khi đó model dễ sinh sai label, sai relationship hoặc sai property. Tuy nhiên, tăng `max_seq_length` quá cao không làm model hiểu tốt hơn một cách tự động; nó chỉ cho model **có khả năng đọc nhiều ngữ cảnh hơn**.
+
+`max_new_tokens = 256` là số token tối đa model được phép sinh ra ở phần output. Nó ảnh hưởng đến độ dài Cypher được trả về:
+
+- Nếu quá thấp, query có thể bị cắt giữa chừng, thiếu `RETURN`, `ORDER BY` hoặc `LIMIT`.
+- Nếu vừa đủ, model sinh được Cypher hoàn chỉnh và gọn.
+- Nếu quá cao, model có nhiều không gian để sinh thêm giải thích, markdown, hoặc query thứ hai không cần thiết.
+
+Với các câu Text2Cypher demo hiện tại, Cypher thường khá ngắn nên `max_new_tokens=256` là hợp lý. Nếu sau này có query phức tạp hơn với nhiều `MATCH`, `WITH`, `CASE` hoặc subquery, có thể tăng lên `384` hoặc `512`, nhưng cần test lại để tránh output thừa.
+
+Đoạn có thể nói khi thuyết trình:
+
+> `max_seq_length` không làm model thông minh hơn, nhưng quyết định lượng ngữ cảnh model đọc được. Nếu schema và prompt dài mà context quá ngắn thì model dễ sinh sai. `max_new_tokens` không làm model hiểu tốt hơn, mà chỉ giới hạn độ dài Cypher được sinh ra. Nếu đặt quá thấp thì query bị cắt, còn quá cao thì dễ có text thừa. Trong demo em dùng context 4096 và output 256 vì Cypher thường ngắn và cần ổn định.
+
 Điểm cần nói rõ:
 
 > Hiện tại demo Text2Cypher chạy ở BF16, không bật 4-bit. Vì vậy nếu thầy hỏi về lượng tử hóa, mình nói là bản demo hiện chưa dùng 4-bit quantization, mà dùng BF16 để cân bằng giữa chất lượng và tài nguyên GPU.
@@ -371,6 +398,68 @@ Nó đưa cho model một số ví dụ mẫu:
 - Show graph fraud transactions connected to merchants/categories.
 
 Few-shot giúp model học đúng pattern query của hệ thống.
+
+### 8.4. Few-Shot Examples Có Phải "Ăn Gian" Không?
+
+Few-shot examples **không phải là ăn gian** nếu mình trình bày đúng bản chất. Đây là kỹ thuật prompt engineering phổ biến để hướng dẫn model về:
+
+- format output mong muốn;
+- cách dùng schema;
+- cách map ngôn ngữ tự nhiên sang label/relationship;
+- quy ước riêng của fraud graph;
+- những lỗi Cypher cần tránh.
+
+Trong hệ thống này, few-shot examples giúp model hiểu các quy ước như:
+
+- "location" nên map sang `StateNode` qua `HAS_STATE`;
+- "merchant" nên map sang `MerchantNode` qua `HAS_MERCHANT`;
+- "category" nên map sang `CategoryNode` qua `HAS_CATEGORY`;
+- auxiliary node dùng property `.value`;
+- fraud filter nên viết là `toString(t.is_fraud) = "1"`;
+- câu hỏi "top N" nên dùng `COUNT`, `ORDER BY ... DESC`, `LIMIT N`.
+
+Điểm quan trọng là hệ thống **không hard-code bằng if/else** kiểu gặp đúng câu hỏi thì trả đúng query cố định. LLM vẫn nhận câu hỏi, schema, rule và ví dụ để tự sinh Cypher.
+
+Không bị xem là ăn gian nếu:
+
+- công khai nói có dùng few-shot prompting;
+- few-shot chỉ là ví dụ đại diện cho schema và pattern truy vấn;
+- hệ thống vẫn sinh query mới từ câu hỏi user;
+- có thể test bằng câu paraphrase hoặc câu không trùng y nguyên ví dụ;
+- không nói sai rằng model tự hiểu hoàn toàn mà không cần prompt.
+
+Có thể bị đánh giá yếu nếu:
+
+- chỉ demo đúng những câu đã đặt y nguyên trong few-shot;
+- hỏi lệch một chút là fail;
+- backend có hard-code câu hỏi bằng `if question == ...`;
+- nói là model tự tổng quát rất tốt nhưng thực tế chỉ copy ví dụ.
+
+Nếu hội đồng hỏi "đưa câu demo vào prompt như vậy có công bằng không?", có thể trả lời:
+
+> Few-shot examples không phải hard-code kết quả, mà là cách hướng dẫn model về schema và format Cypher. Vì graph của em có quy ước riêng, ví dụ auxiliary node dùng `.value`, fraud label là `is_fraud`, location map sang `StateNode`, nên em đưa một số ví dụ mẫu để model sinh query nhất quán hơn. Tuy nhiên hệ thống không chỉ lookup câu hỏi cố định; với câu hỏi mới, model vẫn sinh Cypher dựa trên schema, prompt rules và câu hỏi đầu vào.
+
+Cách demo an toàn hơn là **không dùng y nguyên câu trong few-shot**, mà dùng câu paraphrase.
+
+Ví dụ few-shot có:
+
+```text
+List the top 5 categories with the most fraud transactions
+```
+
+Khi demo có thể hỏi:
+
+```text
+Which transaction categories have the highest number of fraud cases? Show top 5
+```
+
+Hoặc:
+
+```text
+Find the 5 most risky categories by fraud transaction count
+```
+
+Nếu model vẫn sinh đúng query, mình chứng minh được model không chỉ copy câu mẫu, mà đã học được pattern mapping từ prompt.
 
 ## 9. Hậu Xử Lý Output Của LLM
 
