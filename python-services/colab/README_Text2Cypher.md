@@ -1311,6 +1311,7 @@ Kết luận đúng mức:
 - Có self-correction khi Neo4j báo lỗi.
 - Có hậu xử lý để sửa các lỗi nhỏ thường gặp.
 - Có phân biệt query dạng bảng và query dạng graph visualization.
+- Có quy tắc read-only trong prompt và backend guard chặn query ghi trước khi `EXPLAIN` hoặc thực thi.
 - Kết quả Cypher được trả rõ ràng, dễ debug và dễ demo.
 
 ## 15. Hạn Chế Hiện Tại
@@ -1319,7 +1320,7 @@ Các điểm nên nói thật nếu thầy hỏi:
 
 - Text2Cypher chưa đảm bảo đúng 100% về ngữ nghĩa.
 - Service phụ thuộc vào Colab và ngrok, chưa phải deployment production.
-- Chưa có lớp kiểm soát read-only Cypher thật chặt ở phía Colab.
+- Đã có prompt read-only và backend guard theo clause bị cấm, nhưng hiện vẫn dùng chung credential Neo4j cho Build Graph và Text2Cypher; production nên tách account chỉ đọc/chỉ ghi.
 - Nếu schema thay đổi nhiều, prompt và rule cần cập nhật.
 - Model vẫn có thể sinh nhầm label/property, nên cần backend validate.
 - Ngrok URL thay đổi sau mỗi lần chạy lại Colab.
@@ -1339,7 +1340,7 @@ Không nên nói:
 Nên nói:
 
 - Text2Cypher sinh query dựa trên câu hỏi, schema và rule domain.
-- Backend kiểm tra query trước khi chạy.
+- Backend dùng read-only guard để chặn query thay đổi dữ liệu trước bước `EXPLAIN` và kiểm tra lại trước khi chạy query cuối.
 - Hệ thống có cơ chế sửa lỗi dựa trên error log.
 - Cấu hình hiện dùng Qwen2.5-Coder-14B-Instruct standalone ở BF16 với `load_in_4bit=False`, không dùng LoRA; cần kiểm tra VRAM thực tế khi chạy.
 - Dữ liệu gửi cho LLM là câu hỏi và schema/context, không phải toàn bộ database.
@@ -1353,6 +1354,8 @@ Có thể nói ngắn gọn như sau:
 > Khi người dùng nhập câu hỏi trên web, backend gửi câu hỏi kèm schema sang service này. Prompt của model có các luật Cypher, luật domain fraud graph và một số ví dụ few-shot, ví dụ merchant thì dùng `MerchantNode`, category thì dùng `CategoryNode`, location thì dùng `StateNode`. Sau khi model sinh output, service còn có bước hậu xử lý để lấy đúng phần Cypher và sửa một số lỗi syntax nhỏ (thiếu dấu đóng node, dùng sai property `name` thay vì `value`, hoặc dùng `GROUP BY` theo kiểu SQL.)
 >
 > Nếu query sinh ra bị Neo4j báo lỗi, backend sẽ gửi query sai và error log sang endpoint `/correct`. Lúc đó model được yêu cầu sửa đúng lỗi đó và backend thử lại. Cơ chế này không đảm bảo đúng tuyệt đối, nhưng giúp giảm lỗi cú pháp và làm demo truy vấn graph thân thiện hơn với người dùng không biết Cypher.
+>
+> Về an toàn, prompt hiện yêu cầu model chỉ sinh truy vấn đọc dữ liệu. Ở backend, nhóm em thêm `CypherReadOnlyGuardService` để chặn các clause ghi hoặc quản trị như `CREATE`, `MERGE`, `DELETE`, `SET`, `DROP` và `CALL` trước khi gửi sang Neo4j. Vì prototype hiện vẫn dùng chung tài khoản Neo4j cho dựng graph và truy vấn, hướng production tiếp theo là tách credential ghi cho CSV2Graph và credential chỉ đọc cho Text2Cypher.
 
 ## 18. Câu Hỏi Thầy Có Thể Hỏi Và Cách Trả Lời
 
@@ -1384,13 +1387,18 @@ Vì frontend cần nhận node và relationship object để vẽ graph. Nếu c
 
 Vì LLM cần GPU. Colab phù hợp cho demo và thử nghiệm nhanh. Trong hướng phát triển, service này có thể chuyển sang GPU server ổn định hơn.
 
+### Nếu LLM sinh câu `DELETE` hoặc `CREATE` thì sao?
+
+Prompt phía LLM đã yêu cầu chỉ sinh Cypher read-only và trả `error` nếu người dùng yêu cầu sửa/xóa dữ liệu. Ngoài ra, backend còn kiểm tra query trước khi `EXPLAIN` và kiểm tra lại ngay trước khi execute; nếu phát hiện clause ghi hoặc quản trị như `CREATE`, `MERGE`, `DELETE`, `SET`, `DROP`, `CALL`, query sẽ bị từ chối. Đây là bảo vệ phù hợp cho prototype; khi lên production cần dùng thêm Neo4j account chỉ có quyền đọc cho luồng Text2Cypher.
+
 ### `load_in_4bit=False` có nghĩa là gì?
 
 Nghĩa là model không được load ở chế độ 4-bit quantization. Cấu hình hiện tại dùng BF16 (`torch.bfloat16`) và không dùng LoRA adapter. Cần phân biệt hai khái niệm: LoRA là adapter/fine-tuning, còn 4-bit là cách giảm bộ nhớ khi load model. Việc tắt cả hai làm cấu hình rõ về mặt trình bày, nhưng model 14B BF16 có thể không vừa VRAM của L4; chất lượng và khả năng chạy phải được test lại trước demo.
 
 ## 19. Hướng Phát Triển
 
-- Thêm lớp kiểm soát read-only Cypher để chặn `CREATE`, `DELETE`, `SET`, `MERGE`, `DROP`.
+- Tách credential Neo4j: account ghi cho CSV2Graph/Append và account chỉ đọc cho Text2Cypher.
+- Nâng cấp read-only guard bằng allowlist/parser chính thức, timeout và audit log cho các query bị chặn.
 - Chuẩn hóa schema context gửi vào prompt ngắn gọn hơn.
 - Log lại câu hỏi, Cypher sinh ra, lỗi và query sau correction để đánh giá.
 - Viết bộ test cố định cho các câu hỏi demo.

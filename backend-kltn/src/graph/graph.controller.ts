@@ -12,6 +12,7 @@ import { SchemaService } from '../text2cypher/schema.service';
 import { DatasetMetaService } from '../csv2graph/dataset-meta.service';
 import { formatRecords } from './graph.formatter';
 import { QueryDto } from './dto/query.dto';
+import { CypherReadOnlyGuardService } from '../text2cypher/cypher-readonly-guard.service';
 
 @Controller('graph')
 export class GraphController {
@@ -20,6 +21,7 @@ export class GraphController {
     private readonly text2CypherService: Text2CypherService,
     private readonly schemaService: SchemaService,
     private readonly datasetMeta: DatasetMetaService,
+    private readonly readOnlyGuard: CypherReadOnlyGuardService,
   ) {}
 
   @Post('query')
@@ -43,6 +45,7 @@ export class GraphController {
     }
 
     // 2. Execute Cypher đã validated
+    this.readOnlyGuard.assertReadOnly(result.finalCypher);
     const session = this.neo4jService.getReadSession();
     try {
       const queryResult = await session.run(result.finalCypher);

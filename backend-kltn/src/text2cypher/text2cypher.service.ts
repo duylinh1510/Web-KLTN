@@ -5,7 +5,11 @@ import { firstValueFrom } from 'rxjs';
 import { Neo4jService } from '../neo4j/neo4j.service';
 import { SchemaService } from './schema.service';
 import { DatasetMetaService } from '../csv2graph/dataset-meta.service';
-import { Text2CypherResult, CorrectionResult } from './dto/text2cypher-result.dto';
+import {
+  Text2CypherResult,
+  CorrectionResult,
+} from './dto/text2cypher-result.dto';
+import { CypherReadOnlyGuardService } from './cypher-readonly-guard.service';
 
 @Injectable()
 export class Text2CypherService {
@@ -17,6 +21,7 @@ export class Text2CypherService {
     private readonly neo4jService: Neo4jService,
     private readonly schemaService: SchemaService,
     private readonly datasetMeta: DatasetMetaService,
+    private readonly readOnlyGuard: CypherReadOnlyGuardService,
   ) {}
 
   // ============================================================
@@ -36,7 +41,10 @@ export class Text2CypherService {
     // Bước 1: Schema Linking → ra cypher_v2
     const schemaLinkingResult = await this.generateWithSchemaLinking(question);
 
-    if (!schemaLinkingResult.cypherV2 || schemaLinkingResult.cypherV2 === 'error') {
+    if (
+      !schemaLinkingResult.cypherV2 ||
+      schemaLinkingResult.cypherV2 === 'error'
+    ) {
       return {
         finalCypher: schemaLinkingResult.cypherV2 ?? 'error',
         success: false,
@@ -77,7 +85,11 @@ export class Text2CypherService {
     const fullSchema = await this.schemaService.getFullSchema();
 
     console.log('[Text2Cypher] --- SCHEMA LINKING ---');
-    console.log('[Text2Cypher] Full schema length:', fullSchema.length, 'chars');
+    console.log(
+      '[Text2Cypher] Full schema length:',
+      fullSchema.length,
+      'chars',
+    );
 
     // 2. Gọi /generate LẦN 1 (full schema)
     console.log('[Text2Cypher] Calling /generate LẦN 1 (full schema)...');
@@ -85,19 +97,34 @@ export class Text2CypherService {
     console.log('[Text2Cypher] Cypher V1:', cypherV1);
 
     if (!cypherV1 || cypherV1 === 'error') {
-      return { cypherV1: cypherV1 ?? 'error', cypherV2: 'error', schemaUsed: fullSchema };
+      return {
+        cypherV1: cypherV1 ?? 'error',
+        cypherV2: 'error',
+        schemaUsed: fullSchema,
+      };
     }
 
     // 3. Schema Linking: filter schema theo cypher_v1
-    const linkedSchema = this.schemaService.filterSchemaByQuery(cypherV1, fullSchema);
-    console.log('[Text2Cypher] Linked schema length:', linkedSchema.length, 'chars');
+    const linkedSchema = this.schemaService.filterSchemaByQuery(
+      cypherV1,
+      fullSchema,
+    );
+    console.log(
+      '[Text2Cypher] Linked schema length:',
+      linkedSchema.length,
+      'chars',
+    );
 
     // 4. Gọi /generate LẦN 2 (linked schema)
     console.log('[Text2Cypher] Calling /generate LẦN 2 (linked schema)...');
     const cypherV2 = await this.callColabGenerate(question, linkedSchema);
     console.log('[Text2Cypher] Cypher V2:', cypherV2);
 
-    return { cypherV1, cypherV2: cypherV2 ?? 'error', schemaUsed: linkedSchema };
+    return {
+      cypherV1,
+      cypherV2: cypherV2 ?? 'error',
+      schemaUsed: linkedSchema,
+    };
   }
 
   // ============================================================
@@ -116,13 +143,34 @@ export class Text2CypherService {
     console.log('[Text2Cypher] --- SELF-CORRECTION LOOP ---');
 
     while (retry < this.maxRetries) {
+      const guardResult = this.readOnlyGuard.validate(currentCypher);
+      if (!guardResult.safe) {
+        const guardError = `Read-only guard rejected query: ${guardResult.reason}`;
+        errors.push(guardError);
+        console.log(`[Text2Cypher] ${guardError}`);
+        return {
+          success: false,
+          finalCypher: currentCypher,
+          retries: retry,
+          errors,
+        };
+      }
+
       // Execute EXPLAIN
-      console.log(`[Text2Cypher] EXPLAIN attempt ${retry + 1}/${this.maxRetries}...`);
-      const { success, error } = await this.neo4jService.executeCypherExplain(currentCypher);
+      console.log(
+        `[Text2Cypher] EXPLAIN attempt ${retry + 1}/${this.maxRetries}...`,
+      );
+      const { success, error } =
+        await this.neo4jService.executeCypherExplain(currentCypher);
 
       if (success) {
         console.log(`[Text2Cypher] EXPLAIN passed! (retries: ${retry})`);
-        return { success: true, finalCypher: currentCypher, retries: retry, errors };
+        return {
+          success: true,
+          finalCypher: currentCypher,
+          retries: retry,
+          errors,
+        };
       }
 
       // Record error
@@ -132,7 +180,12 @@ export class Text2CypherService {
 
       // Gọi /correct để sửa
       console.log('[Text2Cypher] Calling /correct...');
-      const corrected = await this.callColabCorrect(question, schema, currentCypher, error!);
+      const corrected = await this.callColabCorrect(
+        question,
+        schema,
+        currentCypher,
+        error!,
+      );
 
       if (!corrected || corrected === 'error') {
         console.log('[Text2Cypher] Correction failed, breaking loop');
@@ -146,20 +199,32 @@ export class Text2CypherService {
 
     // Failure sau max retries
     console.log(`[Text2Cypher] Self-correction FAILED after ${retry} retries`);
-    return { success: false, finalCypher: currentCypher, retries: retry, errors };
+    return {
+      success: false,
+      finalCypher: currentCypher,
+      retries: retry,
+      errors,
+    };
   }
 
   // ============================================================
   // PRIVATE: HTTP helpers gọi Colab API
   // ============================================================
 
-  private async callColabGenerate(question: string, schema: string): Promise<string> {
+  private async callColabGenerate(
+    question: string,
+    schema: string,
+  ): Promise<string> {
     const baseUrl = this.getBaseUrl();
     const timeout = this.getTimeout();
 
     try {
       const { data } = await firstValueFrom(
-        this.http.post(`${baseUrl}/generate`, { question, schema }, { timeout }),
+        this.http.post(
+          `${baseUrl}/generate`,
+          { question, schema },
+          { timeout },
+        ),
       );
 
       const cypher = typeof data === 'string' ? data : data?.cypher;
@@ -170,7 +235,8 @@ export class Text2CypherService {
 
       return cypher.replace(/\\n/g, '\n').trim();
     } catch (error: any) {
-      const msg = error?.response?.data?.message ?? error?.message ?? 'Unknown error';
+      const msg =
+        error?.response?.data?.message ?? error?.message ?? 'Unknown error';
       console.log(`[Text2Cypher] /generate error: ${msg}`);
       throw new HttpException(`AI Engine lỗi: ${msg}`, HttpStatus.BAD_GATEWAY);
     }
@@ -201,7 +267,8 @@ export class Text2CypherService {
 
       return cypher.replace(/\\n/g, '\n').trim();
     } catch (error: any) {
-      const msg = error?.response?.data?.message ?? error?.message ?? 'Unknown error';
+      const msg =
+        error?.response?.data?.message ?? error?.message ?? 'Unknown error';
       console.log(`[Text2Cypher] /correct error: ${msg}`);
       return 'error';
     }
