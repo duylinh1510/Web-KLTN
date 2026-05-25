@@ -108,7 +108,7 @@ Khi thuyết trình có thể nói:
 Trong file hiện tại:
 
 ```python
-model_id = "nobara050/qwen2-T2C-lora-adapter"
+model_id = "Qwen/Qwen2.5-Coder-14B-Instruct"
 max_seq_length = 4096
 ```
 
@@ -127,10 +127,10 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 
 | Cấu hình | Ý nghĩa |
 | --- | --- |
-| `model_id` | Model hoặc LoRA adapter dùng cho Text2Cypher |
+| `model_id` | Qwen2.5-Coder-14B-Instruct standalone chính thức, không phải LoRA adapter |
 | `max_seq_length = 4096` | Số token tối đa cho prompt và context |
-| `dtype=torch.bfloat16` | Chạy inference ở BF16 để tiết kiệm bộ nhớ hơn FP32 |
-| `load_in_4bit=False` | Hiện tại không bật 4-bit quantization |
+| `dtype=torch.bfloat16` | Chạy inference ở BF16 |
+| `load_in_4bit=False` | Không bật 4-bit quantization |
 | `do_sample=False` | Sinh kết quả deterministic, giảm độ ngẫu nhiên |
 | `max_new_tokens=256` | Giới hạn số token Cypher sinh ra |
 
@@ -163,7 +163,7 @@ Với các câu Text2Cypher demo hiện tại, Cypher thường khá ngắn nên
 
 Điểm cần nói rõ:
 
-> Hiện tại demo Text2Cypher chạy ở BF16, không bật 4-bit. Vì vậy nếu thầy hỏi về lượng tử hóa, mình nói là bản demo hiện chưa dùng 4-bit quantization, mà dùng BF16 để cân bằng giữa chất lượng và tài nguyên GPU.
+> Hiện tại cấu hình Text2Cypher dùng model `Qwen2.5-Coder-14B-Instruct` độc lập, không load LoRA adapter và không bật 4-bit quantization. Model được cấu hình BF16. Tuy nhiên, một GPU L4 có 24 GB VRAM trong khi model 14B ở BF16 cần xấp xỉ 28 GB chỉ cho trọng số, chưa tính cache và overhead; vì vậy cấu hình này có thể bị thiếu VRAM trên L4. Nếu cần chạy ổn trên L4, nên dùng bản 7B BF16 hoặc chấp nhận quantization cho bản 14B.
 
 Sau khi load model:
 
@@ -190,7 +190,7 @@ Mục đích là định dạng prompt theo đúng kiểu hội thoại mà Qwen
 File tạo FastAPI app:
 
 ```python
-app = FastAPI(title="Text2Cypher API (Qwen2)")
+app = FastAPI(title="Text2Cypher API (Qwen2.5-Coder-14B)")
 ```
 
 ### 6.1. Endpoint `/generate`
@@ -870,7 +870,180 @@ Giải thích:
 - Trả về node transaction, relationship, và node merchant.
 - Có `LIMIT 50` để tránh render quá nhiều graph object trên frontend.
 
-## 13. Những Điểm Mạnh Của Thiết Kế Này
+## 13. Bộ Kiểm Thử Paraphrase Và Kết Quả Ghi Nhận
+
+Mục tiêu của bộ test này là kiểm tra model trên các câu hỏi **không trùng nguyên văn với few-shot examples**, đồng thời có độ khó cao hơn các query demo cơ bản.
+
+Lưu ý về phạm vi kết luận:
+
+- Các Cypher dưới đây là output đã ghi nhận trong lần kiểm thử.
+- Kết quả được review về cú pháp Cypher, schema graph hiện tại và ý nghĩa nghiệp vụ.
+- Chưa có log execution result kèm theo trong tài liệu này; trước khi báo cáo nên chạy lại trên Neo4j và chụp kết quả.
+- Vì service vừa được đổi sang `Qwen2.5-Coder-14B-Instruct` standalone, cần chạy lại đúng 5 câu này sau khi model mới load thành công để xác nhận kết quả thuộc cấu hình mới.
+
+### 13.1. Paraphrase Category Mapping Và Top N
+
+Câu hỏi test:
+
+```text
+Which five purchase categories are associated with the highest number of fraudulent transactions?
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_CATEGORY]->(c:CategoryNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN c.value AS category, COUNT(t) AS fraud_count
+ORDER BY fraud_count DESC
+LIMIT 5
+```
+
+Đánh giá: **Đúng**.
+
+- Model hiểu `purchase categories` là `CategoryNode`.
+- Dùng đúng relationship `HAS_CATEGORY`.
+- Biết lọc fraud và xử lý top 5 bằng `COUNT`, `ORDER BY`, `LIMIT`.
+
+### 13.2. Conditional Aggregation Theo Location
+
+Câu hỏi test:
+
+```text
+For each location, compare the number of fraudulent and legitimate transactions,
+and show only locations with at least 20 fraudulent transactions,
+sorted from highest to lowest fraud count.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_STATE]->(s:StateNode)
+WITH s.value AS location,
+     SUM(CASE WHEN toString(t.is_fraud) = "1" THEN 1 ELSE 0 END) AS fraud_count,
+     SUM(CASE WHEN toString(t.is_fraud) <> "1" THEN 1 ELSE 0 END) AS non_fraud_count
+WHERE fraud_count >= 20
+RETURN location, fraud_count, non_fraud_count
+ORDER BY fraud_count DESC
+```
+
+Đánh giá: **Đúng với dataset có nhãn sạch `0/1`**.
+
+- Model map `location` về đúng `StateNode` qua `HAS_STATE`.
+- Biết dùng `WITH` để aggregate trước khi lọc `fraud_count >= 20`.
+- Không sinh `GROUP BY` theo kiểu SQL.
+- Nếu muốn chặt hơn khi dữ liệu có null hoặc nhãn bất thường, có thể đổi điều kiện non-fraud thành `toString(t.is_fraud) = "0"` thay vì `<> "1"`.
+
+### 13.3. Tổng Giá Trị Fraud Theo Merchant
+
+Câu hỏi test:
+
+```text
+Find the top 10 merchants by total fraudulent transaction amount,
+but only include merchants that have at least 3 fraudulent transactions.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode)
+WHERE toString(t.is_fraud) = "1"
+WITH m, SUM(toFloat(t.amt)) AS total_fraud_amount, COUNT(t) AS fraud_count
+WHERE fraud_count >= 3
+RETURN m.value AS merchant, total_fraud_amount, fraud_count
+ORDER BY total_fraud_amount DESC
+LIMIT 10
+```
+
+Đánh giá: **Đúng**.
+
+- Model dùng đúng `MerchantNode` và `HAS_MERCHANT`.
+- Biết yêu cầu này phải sort theo tổng số tiền, không phải fraud count.
+- Dùng `toFloat(t.amt)` phù hợp khi property amount có thể lưu ở dạng string.
+- Biết lọc sau aggregation bằng `WITH ... WHERE`.
+
+### 13.4. Graph Visualization Kết Hợp Điều Kiện Amount
+
+Câu hỏi test:
+
+```text
+Show a graph view of fraudulent transactions with an amount greater than 1000
+connected to their merchants, limited to 30 relationships.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[r:HAS_MERCHANT]->(m:MerchantNode)
+WHERE toString(t.is_fraud) = "1" AND toFloat(t.amt) > 1000
+RETURN t, r, m
+LIMIT 30
+```
+
+Đánh giá: **Đúng**.
+
+- Model hiểu `graph view` cần trả node và relationship object: `t`, `r`, `m`.
+- Dùng đúng quan hệ merchant.
+- Kết hợp đúng filter fraud và numeric amount.
+- Có giới hạn số quan hệ để frontend không render graph quá lớn.
+
+### 13.5. Tỷ Lệ Fraud Theo Gender
+
+Câu hỏi test:
+
+```text
+Calculate the fraud rate for each gender. Return the gender, total number of
+transactions, number of fraudulent transactions, and fraud percentage,
+ordered by fraud percentage descending.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_GENDER]->(g:GenderNode)
+RETURN g.value AS gender,
+       COUNT(t) AS total_transactions,
+       SUM(CASE WHEN toString(t.is_fraud) = "1" THEN 1 ELSE 0 END) AS fraudulent_transactions,
+       (SUM(CASE WHEN toString(t.is_fraud) = "1" THEN 1 ELSE 0 END) * 100.0 / COUNT(t)) AS fraud_percentage
+ORDER BY fraud_percentage DESC
+```
+
+Đánh giá: **Đúng**.
+
+- Model hiểu `fraud rate` cần tính tỷ lệ, không chỉ đếm fraud.
+- Dùng đúng `GenderNode` và `g.value`.
+- Nhân `100.0` để biểu diễn phần trăm dưới dạng số thực.
+- Sắp xếp đúng theo tỷ lệ giảm dần.
+
+### 13.6. Tổng Hợp Đánh Giá
+
+| Bài test | Năng lực cần kiểm tra | Kết quả review |
+| --- | --- | --- |
+| Category paraphrase top 5 | Mapping từ đồng nghĩa + top N | Đúng |
+| Location fraud/non-fraud | Conditional aggregation + `WITH` filter | Đúng với nhãn `0/1` |
+| Merchant total amount | Numeric aggregation + minimum count | Đúng |
+| Graph view amount > 1000 | Visual query + node/relationship return | Đúng |
+| Fraud percentage by gender | Tính tỷ lệ + ordering | Đúng |
+
+Kết luận định tính:
+
+> Bộ test cho thấy model có thể áp dụng schema và domain rules vào các câu paraphrase, đồng thời sinh được query phức tạp hơn few-shot cơ bản như conditional aggregation, tổng số tiền, lọc sau aggregation, graph visualization và tính tỷ lệ. Tuy nhiên, đây chưa phải đánh giá định lượng hoàn chỉnh. Để báo cáo chặt chẽ hơn, cần chạy lại trên cấu hình model chốt cuối cùng, lưu kết quả thực thi Neo4j và xây dựng test set tách khỏi prompt.
+
+### 13.7. Script Nói Khi Thuyết Trình Về Phần Kiểm Thử
+
+Đoạn nói khoảng 60-90 giây:
+
+> Để kiểm tra Text2Cypher có chỉ lặp lại few-shot examples hay không, nhóm em chuẩn bị một bộ câu hỏi paraphrase và các yêu cầu phức tạp hơn câu mẫu trong prompt. Ví dụ, thay vì hỏi nguyên văn top category fraud, nhóm hỏi các purchase categories nào có số fraud cao nhất; model vẫn map đúng sang `CategoryNode` và sinh truy vấn top 5.
+>
+> Nhóm cũng kiểm tra những dạng query khó hơn. Với câu so sánh fraud và non-fraud theo location, model biết dùng `StateNode`, dùng `WITH` để aggregate, sau đó lọc các location có ít nhất 20 giao dịch fraud. Với câu hỏi merchant theo tổng giá trị gian lận, model biết tính `SUM(toFloat(t.amt))`, đồng thời lọc merchant có tối thiểu ba giao dịch fraud. Với câu hỏi hiển thị graph, model trả về `t, r, m` thay vì chỉ trả các giá trị dạng bảng, nên phù hợp cho visualization trên giao diện.
+>
+> Ngoài ra, nhóm thử câu tính tỷ lệ fraud theo giới tính; model sinh đúng phép tính phần trăm và thứ tự sắp xếp. Qua năm câu này, nhóm ghi nhận model xử lý đúng về cú pháp, schema và ý nghĩa nghiệp vụ ở mức kiểm tra định tính. Tuy nhiên, nhóm không khẳng định đúng tuyệt đối; bước tiếp theo là chạy bộ test tách biệt trên cấu hình model cuối cùng và đánh giá bằng kết quả thực thi trên Neo4j.
+
+Nếu thầy hỏi vì sao chưa gọi đây là đánh giá chính thức, trả lời:
+
+> Hiện tại đây là kiểm tra định tính để xác minh luồng prototype và khả năng tổng quát ngoài few-shot. Đánh giá chính thức cần một tập câu hỏi cố định không nằm trong prompt, ground-truth Cypher hoặc ground-truth kết quả, sau đó đo execution accuracy hoặc semantic correctness.
+
+## 14. Những Điểm Mạnh Của Thiết Kế Này
 
 - Tách LLM ra khỏi backend chính, backend không phải gánh GPU.
 - Có schema và domain rules để giảm hallucination.
@@ -880,7 +1053,7 @@ Giải thích:
 - Có phân biệt query dạng bảng và query dạng graph visualization.
 - Kết quả Cypher được trả rõ ràng, dễ debug và dễ demo.
 
-## 14. Hạn Chế Hiện Tại
+## 15. Hạn Chế Hiện Tại
 
 Các điểm nên nói thật nếu thầy hỏi:
 
@@ -892,12 +1065,13 @@ Các điểm nên nói thật nếu thầy hỏi:
 - Ngrok URL thay đổi sau mỗi lần chạy lại Colab.
 - Tốc độ phụ thuộc GPU Colab và thời gian load model.
 
-## 15. Không Nên Nói Sai Các Điểm Này
+## 16. Không Nên Nói Sai Các Điểm Này
 
 Không nên nói:
 
 - "Text2Cypher đảm bảo query luôn đúng."
-- "Model đang dùng 4-bit quantization."
+- "Model đang dùng LoRA adapter đã fine-tune riêng cho Text2Cypher."
+- "Bỏ LoRA đồng nghĩa với model 14B BF16 chắc chắn vừa trên L4."
 - "Toàn bộ dữ liệu Neo4j được gửi vào LLM."
 - "Text2Cypher là model fraud detection chính."
 - "Người dùng có thể chạy mọi loại Cypher tự do."
@@ -907,20 +1081,20 @@ Nên nói:
 - Text2Cypher sinh query dựa trên câu hỏi, schema và rule domain.
 - Backend kiểm tra query trước khi chạy.
 - Hệ thống có cơ chế sửa lỗi dựa trên error log.
-- Demo hiện chạy BF16 với `load_in_4bit=False`.
+- Cấu hình hiện dùng Qwen2.5-Coder-14B-Instruct standalone ở BF16 với `load_in_4bit=False`, không dùng LoRA; cần kiểm tra VRAM thực tế khi chạy.
 - Dữ liệu gửi cho LLM là câu hỏi và schema/context, không phải toàn bộ database.
 
-## 16. Đoạn Nói Gợi Ý Khi Thuyết Trình
+## 17. Đoạn Nói Gợi Ý Khi Thuyết Trình
 
 Có thể nói ngắn gọn như sau:
 
-> Phần Text2Cypher trong hệ thống dùng một LLM Qwen đã gắn LoRA adapter để chuyển câu hỏi tự nhiên thành Cypher query cho Neo4j. Vì LLM cần GPU nên em triển khai service này trên Colab bằng FastAPI, sau đó dùng ngrok để backend NestJS gọi được qua hai endpoint là `/generate` và `/correct`.
+> Phần Text2Cypher trong hệ thống dùng model `Qwen2.5-Coder-14B-Instruct` standalone để chuyển câu hỏi tự nhiên thành Cypher query cho Neo4j. Model không dùng LoRA adapter và cấu hình hiện tại load ở BF16, không bật 4-bit quantization. Vì 14B BF16 khá nặng so với GPU L4 24 GB, nhóm cần kiểm tra khả năng chạy thực tế hoặc chuyển sang 7B BF16 nếu gặp lỗi thiếu VRAM. Service được expose bằng FastAPI và ngrok để backend NestJS gọi qua hai endpoint là `/generate` và `/correct`.
 >
 > Khi người dùng nhập câu hỏi trên web, backend gửi câu hỏi kèm schema sang service này. Prompt của model có các luật Cypher, luật domain fraud graph và một số ví dụ few-shot, ví dụ merchant thì dùng `MerchantNode`, category thì dùng `CategoryNode`, location thì dùng `StateNode`. Sau khi model sinh output, service còn có bước hậu xử lý để lấy đúng phần Cypher và sửa một số lỗi thường gặp như thiếu dấu đóng node, dùng sai property `name` thay vì `value`, hoặc dùng `GROUP BY` theo kiểu SQL.
 >
 > Nếu query sinh ra bị Neo4j báo lỗi, backend sẽ gửi query sai và error log sang endpoint `/correct`. Lúc đó model được yêu cầu sửa đúng lỗi đó và backend thử lại. Cơ chế này không đảm bảo đúng tuyệt đối, nhưng giúp giảm lỗi cú pháp và làm demo truy vấn graph thân thiện hơn với người dùng không biết Cypher.
 
-## 17. Câu Hỏi Thầy Có Thể Hỏi Và Cách Trả Lời
+## 18. Câu Hỏi Thầy Có Thể Hỏi Và Cách Trả Lời
 
 ### Vì sao cần Text2Cypher?
 
@@ -952,9 +1126,9 @@ Vì LLM cần GPU. Colab phù hợp cho demo và thử nghiệm nhanh. Trong hư
 
 ### `load_in_4bit=False` có nghĩa là gì?
 
-Nghĩa là hiện tại model không load ở chế độ 4-bit quantization. Bản demo dùng BF16 (`torch.bfloat16`). Nếu cần giảm VRAM hơn nữa có thể thử bật 4-bit, nhưng cần kiểm tra lại chất lượng sinh Cypher.
+Nghĩa là model không được load ở chế độ 4-bit quantization. Cấu hình hiện tại dùng BF16 (`torch.bfloat16`) và không dùng LoRA adapter. Cần phân biệt hai khái niệm: LoRA là adapter/fine-tuning, còn 4-bit là cách giảm bộ nhớ khi load model. Việc tắt cả hai làm cấu hình rõ về mặt trình bày, nhưng model 14B BF16 có thể không vừa VRAM của L4; chất lượng và khả năng chạy phải được test lại trước demo.
 
-## 18. Hướng Phát Triển
+## 19. Hướng Phát Triển
 
 - Thêm lớp kiểm soát read-only Cypher để chặn `CREATE`, `DELETE`, `SET`, `MERGE`, `DROP`.
 - Chuẩn hóa schema context gửi vào prompt ngắn gọn hơn.
@@ -964,6 +1138,6 @@ Nghĩa là hiện tại model không load ở chế độ 4-bit quantization. B�
 - Thêm ranking hoặc template fallback cho các câu hỏi phổ biến.
 - Thêm kiểm tra semantic, không chỉ kiểm tra syntax.
 
-## 19. Tóm Tắt Một Câu
+## 20. Tóm Tắt Một Câu
 
 Text2Cypher trong file `ngrok_t2c_colab.py` là một FastAPI service chạy LLM trên Colab, nhận câu hỏi tự nhiên và schema, sinh Cypher cho Neo4j, có prompt domain-specific, hậu xử lý lỗi phổ biến và endpoint self-correction để hỗ trợ demo truy vấn fraud graph trên web.

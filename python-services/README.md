@@ -142,9 +142,10 @@ AI_TIMEOUT_MS=180000
 
 Ghi chu model:
 
-- Script hien chay `dtype=torch.bfloat16`.
-- `load_in_4bit=False`, tuc la demo khong bat 4-bit quantization.
-- Khong nen noi trong bao cao la Text2Cypher dang dung 4-bit.
+- Script hien dung `Qwen/Qwen2.5-Coder-14B-Instruct`.
+- Day la model instruct standalone, khong load LoRA adapter.
+- Script cau hinh `dtype=torch.bfloat16` va `load_in_4bit=False`.
+- Can luu y model 14B BF16 co nguy co khong vua GPU L4 24 GB; neu OOM thi dung 7B BF16 hoac bat quantization cho 14B.
 
 ## Setup local Python
 

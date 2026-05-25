@@ -266,8 +266,8 @@ React Frontend
 **Nội dung trên slide**
 
 - Model Text2Cypher chạy trên Colab/ngrok.
-- Dùng Qwen LoRA adapter.
-- Hiện tại demo load BF16, `load_in_4bit=False`.
+- Dùng `Qwen2.5-Coder-14B-Instruct` standalone, không dùng LoRA adapter.
+- Cấu hình hiện tại dùng BF16, `load_in_4bit=False`; cần kiểm tra VRAM trước demo.
 - Luồng:
   - natural language question;
   - schema context;
@@ -280,12 +280,12 @@ React Frontend
 
 **Lời thoại gợi ý**
 
-> Text2Cypher giúp người dùng hỏi Neo4j bằng ngôn ngữ tự nhiên. Ở demo hiện tại, nhóm dùng Qwen kết hợp LoRA adapter chạy trên Colab. Model được load ở BF16, không bật 4-bit quantization. Backend gửi schema và câu hỏi sang model để sinh Cypher, sau đó dùng EXPLAIN để kiểm tra và gọi self-correction nếu có lỗi.
+> Text2Cypher giúp người dùng hỏi Neo4j bằng ngôn ngữ tự nhiên. Ở cấu hình hiện tại, nhóm dùng `Qwen2.5-Coder-14B-Instruct` độc lập, không sử dụng LoRA adapter và không bật 4-bit quantization. Model được cấu hình BF16. Vì bản 14B khá nặng so với VRAM L4, nhóm sẽ kiểm tra thực tế trước demo và có phương án chuyển xuống 7B BF16 nếu gặp OOM. Backend gửi schema và câu hỏi sang model để sinh Cypher, sau đó dùng EXPLAIN để kiểm tra và gọi self-correction nếu có lỗi.
 
 **Lưu ý tránh nói sai**
 
-- Không nói đang dùng 4-bit quantization.
-- Nói rõ `load_in_4bit=False`, BF16.
+- Không nói đang dùng LoRA adapter sau khi đã đổi model.
+- Nói rõ `load_in_4bit=False`, BF16, và không khẳng định model 14B chắc chắn chạy được trên L4 trước khi test.
 - Không nói EXPLAIN đảm bảo đúng ngữ nghĩa 100%.
 
 ---
@@ -781,7 +781,7 @@ Trả lời:
 
 Trả lời:
 
-> Không. Demo hiện tại load model ở BF16 với `load_in_4bit=False`. 4-bit là hướng tối ưu VRAM nếu GPU yếu hơn, nhưng hiện tại nhóm ưu tiên độ ổn định khi sinh Cypher.
+> Không. Cấu hình hiện tại dùng `Qwen2.5-Coder-14B-Instruct` standalone ở BF16 với `load_in_4bit=False`, không sử dụng LoRA adapter. Tuy nhiên model 14B BF16 có thể vượt VRAM L4 24 GB nên nhóm cần test trước khi chốt cấu hình demo; nếu OOM sẽ dùng 7B BF16 hoặc cân nhắc quantization.
 
 ### Q6. Điểm yếu lớn nhất hiện tại là gì?
 
@@ -824,7 +824,7 @@ Trả lời:
 - [ ] Có sơ đồ kiến trúc hệ thống.
 - [ ] Có sơ đồ CSV -> Graph -> Neo4j -> F-GNN -> Text2Cypher.
 - [ ] Có slide phân biệt graph cho GNN và graph cho Neo4j.
-- [ ] Có slide nói rõ demo dùng BF16, không dùng 4-bit.
+- [ ] Có slide nói rõ cấu hình Text2Cypher standalone, không dùng LoRA, `load_in_4bit=False`, và phương án dự phòng nếu 14B BF16 không vừa L4.
 - [ ] Có slide hạn chế và hướng phát triển.
 - [ ] Có slide câu hỏi xin thầy góp ý.
 

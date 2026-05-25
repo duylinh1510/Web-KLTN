@@ -44,11 +44,12 @@ NGROK_TOKEN = userdata.get('NGROK_TOKEN')
 login(token=HF_TOKEN)
 ngrok.set_auth_token(NGROK_TOKEN)
 
-# 2. Load model (base + LoRA adapter — unsloth tự detect)
-model_id = "nobara050/qwen2-T2C-lora-adapter"
+# 2. Load standalone instruct model (khong dung LoRA adapter, khong quantize).
+# Luu y: model 14B BF16 co the vuot VRAM cua GPU L4 24 GB.
+model_id = "Qwen/Qwen2.5-Coder-14B-Instruct"
 max_seq_length = 4096
 
-print("Đang load model + LoRA adapter...")
+print("Dang load Qwen2.5-Coder-14B-Instruct (standalone, BF16)...")
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=model_id,
     max_seq_length=max_seq_length,
@@ -624,7 +625,7 @@ Corrected Cypher output:"""
 # 3. FastAPI
 # ============================================================
 
-app = FastAPI(title="Text2Cypher API (Qwen2)")
+app = FastAPI(title="Text2Cypher API (Qwen2.5-Coder-14B)")
 
 
 class QueryRequest(BaseModel):

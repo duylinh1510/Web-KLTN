@@ -587,8 +587,8 @@ Thông tin đúng theo code hiện tại:
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Base/adapter | `nobara050/qwen2-T2C-lora-adapter` |
-| Kỹ thuật fine-tune | LoRA adapter |
+| Model | `Qwen/Qwen2.5-Coder-14B-Instruct` |
+| LoRA adapter | Không dùng |
 | Runtime | Google Colab + ngrok |
 | Max sequence length | 4096 |
 | dtype | `torch.bfloat16` |
@@ -605,32 +605,32 @@ dtype=torch.bfloat16
 load_in_4bit=False
 ```
 
-Nghĩa là model chạy BF16, không dùng lượng tử hóa 4-bit.
+Nghĩa là model chạy BF16, không dùng lượng tử hóa 4-bit và cũng không load LoRA adapter.
 
 Cách trả lời:
 
-> Demo hiện tại em load model ở BF16 để ưu tiên độ ổn định khi sinh Cypher. 4-bit quantization là một hướng tối ưu VRAM nếu GPU yếu hơn, nhưng hiện tại em không bật 4-bit.
+> Cấu hình hiện tại em dùng `Qwen2.5-Coder-14B-Instruct` standalone ở BF16, không load LoRA và không bật 4-bit. Tuy nhiên L4 có 24 GB VRAM, trong khi riêng trọng số 14B ở BF16 đã xấp xỉ 28 GB, nên em cần kiểm tra thực tế trước demo. Nếu bị OOM, phương án không dùng quantization là chuyển xuống bản 7B BF16; phương án giữ 14B là dùng GPU lớn hơn hoặc bật quantization.
 
 Không nên nói:
 
-> Hệ thống đang dùng 4-bit quantization.
+> Model 14B BF16 chắc chắn chạy vừa trên một GPU L4.
 
-Vì điều đó sai với code hiện tại.
+Vì điều đó chưa đúng về giới hạn VRAM thực tế.
 
-### 10.3. LoRA là gì?
+### 10.3. Vì sao hiện tại không dùng LoRA?
 
-LoRA là Low-Rank Adaptation.
+LoRA là kỹ thuật gắn adapter nhỏ đã được fine-tune vào base model. Phiên bản trước có thể dùng LoRA adapter để chuyên biệt hóa task Text2Cypher, nhưng cấu hình hiện tại chuyển sang model instruct standalone.
 
-Ý tưởng:
+Điều cần nói rõ:
 
-- giữ base model gần như frozen;
-- thêm các ma trận nhỏ train được;
-- chỉ train một phần nhỏ tham số;
-- tiết kiệm VRAM và thời gian hơn full fine-tune.
+- không dùng LoRA nghĩa là không dùng adapter fine-tune riêng của đề tài;
+- prompt engineering, schema context và self-correction vẫn được giữ lại;
+- bỏ LoRA không đồng nghĩa với tắt hoặc bật quantization;
+- chất lượng sinh Cypher cần được kiểm thử lại vì model không còn adapter chuyên biệt.
 
 Cách nói đơn giản:
 
-> LoRA giống như gắn một adapter nhỏ vào model lớn. Ta train adapter đó để model phù hợp hơn với task Text2Cypher mà không cần train lại toàn bộ model.
+> Hiện tại em thử dùng trực tiếp model instruct chuyên về code mà không gắn LoRA adapter. Vì vậy chất lượng Text2Cypher phụ thuộc vào năng lực model nền kết hợp với prompt, schema context, hậu xử lý và self-correction; em cần test lại trên bộ câu hỏi đại diện.
 
 ### 10.4. Vì sao dùng `do_sample=False`?
 
