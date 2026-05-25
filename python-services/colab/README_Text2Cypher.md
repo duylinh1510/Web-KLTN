@@ -125,14 +125,14 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 
 Ý nghĩa các cấu hình quan trọng:
 
-| Cấu hình | Ý nghĩa |
-| --- | --- |
-| `model_id` | Qwen2.5-Coder-14B-Instruct standalone chính thức, không phải LoRA adapter |
-| `max_seq_length = 4096` | Số token tối đa cho prompt và context |
-| `dtype=torch.bfloat16` | Chạy inference ở BF16 |
-| `load_in_4bit=False` | Không bật 4-bit quantization |
-| `do_sample=False` | Sinh kết quả deterministic, giảm độ ngẫu nhiên |
-| `max_new_tokens=256` | Giới hạn số token Cypher sinh ra |
+| Cấu hình                | Ý nghĩa                                                                   |
+| ----------------------- | ------------------------------------------------------------------------- |
+| `model_id`              | Qwen2.5-Coder-14B-Instruct standalone chính thức, không phải LoRA adapter |
+| `max_seq_length = 4096` | Số token tối đa cho prompt và context                                     |
+| `dtype=torch.bfloat16`  | Chạy inference ở BF16                                                     |
+| `load_in_4bit=False`    | Không bật 4-bit quantization                                              |
+| `do_sample=False`       | Sinh kết quả deterministic, giảm độ ngẫu nhiên                            |
+| `max_new_tokens=256`    | Giới hạn số token Cypher sinh ra                                          |
 
 ### 5.1. `max_seq_length` Và `max_new_tokens` Có Làm Model Thông Minh Hơn Không?
 
@@ -173,10 +173,10 @@ Phần này dùng để giải thích quyết định chọn model khi trình b�
 
 Quy trình hai giai đoạn giúp tăng `Execution Accuracy` so với cách sinh truy vấn zero-shot cơ sở:
 
-| Base model | Zero-shot Execution Accuracy | Schema Linking + Self-Correction | Mức tăng tuyệt đối |
-| --- | ---: | ---: | ---: |
-| Qwen2.5-7B-Instruct | 20.84% | 29.14% | +8.30 điểm phần trăm |
-| Qwen2.5-Coder-14B-Instruct | 37.07% | 40.91% | +3.84 điểm phần trăm |
+| Base model                 | Zero-shot Execution Accuracy | Schema Linking + Self-Correction |   Mức tăng tuyệt đối |
+| -------------------------- | ---------------------------: | -------------------------------: | -------------------: |
+| Qwen2.5-7B-Instruct        |                       20.84% |                           29.14% | +8.30 điểm phần trăm |
+| Qwen2.5-Coder-14B-Instruct |                       37.07% |                           40.91% | +3.84 điểm phần trăm |
 
 Ý nghĩa cần nhấn mạnh:
 
@@ -186,10 +186,10 @@ Quy trình hai giai đoạn giúp tăng `Execution Accuracy` so với cách sinh
 
 Quy trình cũng làm giảm rõ rệt tỷ lệ sinh truy vấn sai cú pháp:
 
-| Base model | Invalid Syntax trước pipeline | Invalid Syntax sau pipeline | Mức giảm tuyệt đối |
-| --- | ---: | ---: | ---: |
-| Qwen2.5-7B-Instruct | 25.6% | 7.3% | -18.3 điểm phần trăm |
-| Qwen2.5-Coder-14B | 13.6% | 3.2% | -10.4 điểm phần trăm |
+| Base model          | Invalid Syntax trước pipeline | Invalid Syntax sau pipeline |   Mức giảm tuyệt đối |
+| ------------------- | ----------------------------: | --------------------------: | -------------------: |
+| Qwen2.5-7B-Instruct |                         25.6% |                        7.3% | -18.3 điểm phần trăm |
+| Qwen2.5-Coder-14B   |                         13.6% |                        3.2% | -10.4 điểm phần trăm |
 
 #### Vì sao hai kỹ thuật bổ trợ cho nhau?
 
@@ -203,10 +203,10 @@ Kết quả ablation của nghiên cứu trước cho thấy hiệu quả cao nh
 
 Nghiên cứu trước cũng cho thấy không thể mặc định pipeline đầy đủ sẽ luôn tăng kết quả cho mọi model:
 
-| Fine-tuned model | Kết quả cơ sở | Khi dùng pipeline đầy đủ | Biến động |
-| --- | ---: | ---: | ---: |
-| Gemma2-ft | 37.11% | 33.35% | -3.76 điểm phần trăm |
-| Qwen2.5-ft | 50.30% | 47.10% | -3.20 điểm phần trăm |
+| Fine-tuned model | Kết quả cơ sở | Khi dùng pipeline đầy đủ |            Biến động |
+| ---------------- | ------------: | -----------------------: | -------------------: |
+| Gemma2-ft        |        37.11% |                   33.35% | -3.76 điểm phần trăm |
+| Qwen2.5-ft       |        50.30% |                   47.10% | -3.20 điểm phần trăm |
 
 Giải thích được đưa ra trong nghiên cứu là hiệu ứng `schema memorization`: bộ đánh giá Text2Cypher-2024v1 chỉ có 16 schema graph database có thể thực thi, nên model fine-tune có thể đã học thuộc các mẫu liên kết trên schema đầy đủ. Khi Schema Linking động rút gọn schema thành schema con, model mất đi một phần ngữ cảnh quen thuộc và độ chính xác có thể giảm.
 
@@ -228,13 +228,13 @@ Vì vậy, trong prototype hiện tại, Text2Cypher nên được mô tả là 
 
 Tiêu đề slide: `Vì sao chọn Qwen2.5-Coder-14B-Instruct?`
 
-| Nội dung trên slide | Cách nói |
-| --- | --- |
-| Nghiên cứu trước của nhóm: Base SLM + Schema Linking + Self-Correction | Đây là căn cứ thực nghiệm cho lựa chọn model và pipeline. |
-| Execution Accuracy: `37.07% -> 40.91%` (`+3.84` điểm phần trăm) | Qwen Coder 14B có baseline mạnh và còn cải thiện khi kết hợp pipeline. |
-| Invalid Syntax: `13.6% -> 3.2%` | Pipeline giảm đáng kể truy vấn không chạy được. |
-| Schema Linking giảm hallucination; Self-Correction sửa lỗi thực thi | Hai cơ chế giải quyết hai loại vấn đề khác nhau. |
-| Lưu ý: chạy được không đồng nghĩa đúng logic | Hệ thống vẫn cần đánh giá semantic correctness. |
+| Nội dung trên slide                                                    | Cách nói                                                               |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Nghiên cứu trước của nhóm: Base SLM + Schema Linking + Self-Correction | Đây là căn cứ thực nghiệm cho lựa chọn model và pipeline.              |
+| Execution Accuracy: `37.07% -> 40.91%` (`+3.84` điểm phần trăm)        | Qwen Coder 14B có baseline mạnh và còn cải thiện khi kết hợp pipeline. |
+| Invalid Syntax: `13.6% -> 3.2%`                                        | Pipeline giảm đáng kể truy vấn không chạy được.                        |
+| Schema Linking giảm hallucination; Self-Correction sửa lỗi thực thi    | Hai cơ chế giải quyết hai loại vấn đề khác nhau.                       |
+| Lưu ý: chạy được không đồng nghĩa đúng logic                           | Hệ thống vẫn cần đánh giá semantic correctness.                        |
 
 Trên slide cần ghi rõ nhãn `Kết quả nghiên cứu trước`, tránh để thầy hiểu rằng đây là metric đã đo lại trên prototype fraud graph hiện tại.
 
@@ -448,14 +448,14 @@ FRAUD_DOMAIN_SEMANTIC_RULES
 
 Các luật quan trọng:
 
-| Người dùng nói | Mapping trong graph |
-| --- | --- |
-| merchant, store, seller, shop | `MerchantNode` qua `HAS_MERCHANT` |
-| category, purchase category | `CategoryNode` qua `HAS_CATEGORY` |
-| gender | `GenderNode` qua `HAS_GENDER` |
-| state, location, region, area | `StateNode` qua `HAS_STATE` |
-| job, occupation | `JobNode` qua `HAS_JOB` |
-| zip, postal code | property `Transaction.zip` |
+| Người dùng nói                  | Mapping trong graph                                  |
+| ------------------------------- | ---------------------------------------------------- |
+| merchant, store, seller, shop   | `MerchantNode` qua `HAS_MERCHANT`                    |
+| category, purchase category     | `CategoryNode` qua `HAS_CATEGORY`                    |
+| gender                          | `GenderNode` qua `HAS_GENDER`                        |
+| state, location, region, area   | `StateNode` qua `HAS_STATE`                          |
+| job, occupation                 | `JobNode` qua `HAS_JOB`                              |
+| zip, postal code                | property `Transaction.zip`                           |
 | latitude, longitude, coordinate | `Transaction.lat`, `long`, `merch_lat`, `merch_long` |
 
 Rule fraud:
@@ -592,16 +592,16 @@ Hàm này map các tên model dễ bịa về đúng schema.
 
 Ví dụ:
 
-| Model sinh sai | Sửa thành |
-| --- | --- |
-| `HAS_LOCATION` | `HAS_STATE` |
-| `LocationNode` | `StateNode` |
-| `HAS_STORE` | `HAS_MERCHANT` |
-| `StoreNode` | `MerchantNode` |
-| `HAS_OCCUPATION` | `HAS_JOB` |
-| `OccupationNode` | `JobNode` |
+| Model sinh sai             | Sửa thành      |
+| -------------------------- | -------------- |
+| `HAS_LOCATION`             | `HAS_STATE`    |
+| `LocationNode`             | `StateNode`    |
+| `HAS_STORE`                | `HAS_MERCHANT` |
+| `StoreNode`                | `MerchantNode` |
+| `HAS_OCCUPATION`           | `HAS_JOB`      |
+| `OccupationNode`           | `JobNode`      |
 | `HAS_TRANSACTION_CATEGORY` | `HAS_CATEGORY` |
-| `TransactionCategoryNode` | `CategoryNode` |
+| `TransactionCategoryNode`  | `CategoryNode` |
 
 Ý nghĩa khi thuyết trình:
 
@@ -754,15 +754,15 @@ Luồng:
 
 Trong `build_correction_prompt`, file có các hint theo loại lỗi:
 
-| Lỗi | Hint sửa |
-| --- | --- |
-| Unknown label | Không dùng label ngoài schema, property phải dùng dấu chấm |
-| Query kết thúc bằng `WITH` | Phải thêm `RETURN` |
-| Có `GROUP BY` | Xóa `GROUP BY` |
-| Expression trong `WITH` chưa alias | Thêm `AS` |
-| Dùng `type(n)` cho node | Dùng `labels(n)[0]` |
-| Pattern expression dùng sai với `SIZE` | Dùng pattern comprehension |
-| Thiếu `)` trước `WHERE` | Đóng node pattern trước |
+| Lỗi                                    | Hint sửa                                                   |
+| -------------------------------------- | ---------------------------------------------------------- |
+| Unknown label                          | Không dùng label ngoài schema, property phải dùng dấu chấm |
+| Query kết thúc bằng `WITH`             | Phải thêm `RETURN`                                         |
+| Có `GROUP BY`                          | Xóa `GROUP BY`                                             |
+| Expression trong `WITH` chưa alias     | Thêm `AS`                                                  |
+| Dùng `type(n)` cho node                | Dùng `labels(n)[0]`                                        |
+| Pattern expression dùng sai với `SIZE` | Dùng pattern comprehension                                 |
+| Thiếu `)` trước `WHERE`                | Đóng node pattern trước                                    |
 
 Điểm cần nói:
 
@@ -1108,13 +1108,13 @@ ORDER BY fraud_percentage DESC
 
 ### 13.6. Tổng Hợp Đánh Giá
 
-| Bài test | Năng lực cần kiểm tra | Kết quả review |
-| --- | --- | --- |
-| Category paraphrase top 5 | Mapping từ đồng nghĩa + top N | Đúng |
-| Location fraud/non-fraud | Conditional aggregation + `WITH` filter | Đúng với nhãn `0/1` |
-| Merchant total amount | Numeric aggregation + minimum count | Đúng |
-| Graph view amount > 1000 | Visual query + node/relationship return | Đúng |
-| Fraud percentage by gender | Tính tỷ lệ + ordering | Đúng |
+| Bài test                   | Năng lực cần kiểm tra                   | Kết quả review      |
+| -------------------------- | --------------------------------------- | ------------------- |
+| Category paraphrase top 5  | Mapping từ đồng nghĩa + top N           | Đúng                |
+| Location fraud/non-fraud   | Conditional aggregation + `WITH` filter | Đúng với nhãn `0/1` |
+| Merchant total amount      | Numeric aggregation + minimum count     | Đúng                |
+| Graph view amount > 1000   | Visual query + node/relationship return | Đúng                |
+| Fraud percentage by gender | Tính tỷ lệ + ordering                   | Đúng                |
 
 Kết luận định tính:
 
@@ -1280,12 +1280,12 @@ LIMIT 20
 
 ### 13.9. Tổng Hợp Kết Quả Test Tiếng Việt
 
-| Tiêu chí | Kết quả |
-| --- | ---: |
-| Tổng số câu hỏi tiếng Việt | 5 |
-| Query hợp lệ về cú pháp và sử dụng thành phần schema hiện có | 5/5 |
-| Query đúng ý nghĩa câu hỏi | 4/5 |
-| Query sai semantic nhưng vẫn có thể thực thi | 1/5 |
+| Tiêu chí                                                     | Kết quả |
+| ------------------------------------------------------------ | ------: |
+| Tổng số câu hỏi tiếng Việt                                   |       5 |
+| Query hợp lệ về cú pháp và sử dụng thành phần schema hiện có |     5/5 |
+| Query đúng ý nghĩa câu hỏi                                   |     4/5 |
+| Query sai semantic nhưng vẫn có thể thực thi                 |     1/5 |
 
 Kết luận đúng mức:
 
@@ -1348,9 +1348,9 @@ Nên nói:
 
 Có thể nói ngắn gọn như sau:
 
-> Phần Text2Cypher trong hệ thống dùng model `Qwen2.5-Coder-14B-Instruct` standalone để chuyển câu hỏi tự nhiên thành Cypher query cho Neo4j. Model không dùng LoRA adapter và cấu hình hiện tại load ở BF16, không bật 4-bit quantization. Vì 14B BF16 khá nặng so với GPU L4 24 GB, nhóm cần kiểm tra khả năng chạy thực tế hoặc chuyển sang 7B BF16 nếu gặp lỗi thiếu VRAM. Service được expose bằng FastAPI và ngrok để backend NestJS gọi qua hai endpoint là `/generate` và `/correct`.
+> Phần Text2Cypher trong hệ thống dùng model `Qwen2.5-Coder-14B-Instruct` để chuyển câu hỏi tự nhiên thành Cypher query cho Neo4j. Service được expose bằng FastAPI và ngrok để backend NestJS gọi qua hai endpoint là `/generate` và `/correct`.
 >
-> Khi người dùng nhập câu hỏi trên web, backend gửi câu hỏi kèm schema sang service này. Prompt của model có các luật Cypher, luật domain fraud graph và một số ví dụ few-shot, ví dụ merchant thì dùng `MerchantNode`, category thì dùng `CategoryNode`, location thì dùng `StateNode`. Sau khi model sinh output, service còn có bước hậu xử lý để lấy đúng phần Cypher và sửa một số lỗi thường gặp như thiếu dấu đóng node, dùng sai property `name` thay vì `value`, hoặc dùng `GROUP BY` theo kiểu SQL.
+> Khi người dùng nhập câu hỏi trên web, backend gửi câu hỏi kèm schema sang service này. Prompt của model có các luật Cypher, luật domain fraud graph và một số ví dụ few-shot, ví dụ merchant thì dùng `MerchantNode`, category thì dùng `CategoryNode`, location thì dùng `StateNode`. Sau khi model sinh output, service còn có bước hậu xử lý để lấy đúng phần Cypher và sửa một số lỗi syntax nhỏ (thiếu dấu đóng node, dùng sai property `name` thay vì `value`, hoặc dùng `GROUP BY` theo kiểu SQL.)
 >
 > Nếu query sinh ra bị Neo4j báo lỗi, backend sẽ gửi query sai và error log sang endpoint `/correct`. Lúc đó model được yêu cầu sửa đúng lỗi đó và backend thử lại. Cơ chế này không đảm bảo đúng tuyệt đối, nhưng giúp giảm lỗi cú pháp và làm demo truy vấn graph thân thiện hơn với người dùng không biết Cypher.
 
