@@ -165,6 +165,97 @@ Với các câu Text2Cypher demo hiện tại, Cypher thường khá ngắn nên
 
 > Hiện tại cấu hình Text2Cypher dùng model `Qwen2.5-Coder-14B-Instruct` độc lập, không load LoRA adapter và không bật 4-bit quantization. Model được cấu hình BF16. Tuy nhiên, một GPU L4 có 24 GB VRAM trong khi model 14B ở BF16 cần xấp xỉ 28 GB chỉ cho trọng số, chưa tính cache và overhead; vì vậy cấu hình này có thể bị thiếu VRAM trên L4. Nếu cần chạy ổn trên L4, nên dùng bản 7B BF16 hoặc chấp nhận quantization cho bản 14B.
 
+### 5.2. Lý Do Chọn `Qwen2.5-Coder-14B-Instruct` Từ Nghiên Cứu Trước
+
+Phần này dùng để giải thích quyết định chọn model khi trình bày với thầy. Các số liệu bên dưới là kết quả nghiên cứu trước của nhóm trong bối cảnh đánh giá các SLM cho Text2Cypher kết hợp `Schema Linking` và `Self-Correction`. Đây là cơ sở cho lựa chọn thiết kế và model, **không phải** kết quả đo trực tiếp của prototype fraud graph đang demo.
+
+#### Kết quả trên các base SLM chưa fine-tune
+
+Quy trình hai giai đoạn giúp tăng `Execution Accuracy` so với cách sinh truy vấn zero-shot cơ sở:
+
+| Base model | Zero-shot Execution Accuracy | Schema Linking + Self-Correction | Mức tăng tuyệt đối |
+| --- | ---: | ---: | ---: |
+| Qwen2.5-7B-Instruct | 20.84% | 29.14% | +8.30 điểm phần trăm |
+| Qwen2.5-Coder-14B-Instruct | 37.07% | 40.91% | +3.84 điểm phần trăm |
+
+Ý nghĩa cần nhấn mạnh:
+
+- `Qwen2.5-Coder-14B-Instruct` có điểm khởi đầu zero-shot cao hơn trong hai base model được so sánh, phù hợp với nhiệm vụ sinh mã truy vấn.
+- Sau khi kết hợp Schema Linking và Self-Correction, model coder 14B đạt `40.91%` Execution Accuracy trong thiết lập nghiên cứu trước.
+- Các chỉ số so khớp văn bản như BLEU, ROUGE-L và Token F1 cũng được ghi nhận cải thiện; tuy nhiên, khi báo cáo nên ưu tiên Execution Accuracy vì câu Cypher cần thực thi đúng trên cơ sở dữ liệu.
+
+Quy trình cũng làm giảm rõ rệt tỷ lệ sinh truy vấn sai cú pháp:
+
+| Base model | Invalid Syntax trước pipeline | Invalid Syntax sau pipeline | Mức giảm tuyệt đối |
+| --- | ---: | ---: | ---: |
+| Qwen2.5-7B-Instruct | 25.6% | 7.3% | -18.3 điểm phần trăm |
+| Qwen2.5-Coder-14B | 13.6% | 3.2% | -10.4 điểm phần trăm |
+
+#### Vì sao hai kỹ thuật bổ trợ cho nhau?
+
+Kết quả ablation của nghiên cứu trước cho thấy hiệu quả cao nhất xuất hiện khi kết hợp cả hai cơ chế:
+
+- `Schema Linking` giới hạn model vào các node label, relationship và property liên quan tới câu hỏi, từ đó giảm hallucination ở cấp schema.
+- `Self-Correction` tiếp nhận lỗi thực thi hoặc gợi ý chẩn đoán để sửa các lỗi cú pháp và lỗi cấu trúc của câu Cypher đã sinh.
+- Một cơ chế giảm việc model chọn sai thành phần schema; cơ chế còn lại xử lý truy vấn đã sinh nhưng chưa thể thực thi. Hai vai trò này không trùng lặp.
+
+#### Khi nói về model đã fine-tune
+
+Nghiên cứu trước cũng cho thấy không thể mặc định pipeline đầy đủ sẽ luôn tăng kết quả cho mọi model:
+
+| Fine-tuned model | Kết quả cơ sở | Khi dùng pipeline đầy đủ | Biến động |
+| --- | ---: | ---: | ---: |
+| Gemma2-ft | 37.11% | 33.35% | -3.76 điểm phần trăm |
+| Qwen2.5-ft | 50.30% | 47.10% | -3.20 điểm phần trăm |
+
+Giải thích được đưa ra trong nghiên cứu là hiệu ứng `schema memorization`: bộ đánh giá Text2Cypher-2024v1 chỉ có 16 schema graph database có thể thực thi, nên model fine-tune có thể đã học thuộc các mẫu liên kết trên schema đầy đủ. Khi Schema Linking động rút gọn schema thành schema con, model mất đi một phần ngữ cảnh quen thuộc và độ chính xác có thể giảm.
+
+Điều này không có nghĩa fine-tuning luôn kém hiệu quả. Kết luận cần nói chính xác là: **Schema Linking động cần được đánh giá cẩn thận khi áp dụng lên model đã fine-tune trên một tập schema hạn chế.**
+
+Riêng `Self-Correction` vẫn thể hiện độ ổn định hơn: khi áp dụng riêng cơ chế này, Gemma2-ft đạt `37.19%`, nhỉnh hơn mức cơ sở `37.11%`.
+
+#### Hạn chế cần nói trung thực
+
+Giảm lỗi cú pháp không đồng nghĩa với đảm bảo đúng logic nghiệp vụ:
+
+- Ở Qwen2.5-7B-Instruct, tỷ lệ `Different Results` được ghi nhận tăng từ `47.3%` lên `55.3%` trong thiết lập pipeline.
+- Điều này cho thấy một truy vấn sai cú pháp có thể được biến thành truy vấn chạy được, nhưng kết quả vẫn sai ý định câu hỏi.
+- Các lỗi như chọn sai hướng relationship, sai điều kiện lọc hoặc sai phép tổng hợp không nhất thiết tạo ra lỗi thực thi để Self-Correction nhận biết.
+
+Vì vậy, trong prototype hiện tại, Text2Cypher nên được mô tả là module hỗ trợ phân tích và truy vấn tự nhiên có kiểm soát, không phải cơ chế tự động đảm bảo mọi câu trả lời đều đúng nghĩa.
+
+#### Nội dung ngắn đưa lên slide
+
+Tiêu đề slide: `Vì sao chọn Qwen2.5-Coder-14B-Instruct?`
+
+| Nội dung trên slide | Cách nói |
+| --- | --- |
+| Nghiên cứu trước của nhóm: Base SLM + Schema Linking + Self-Correction | Đây là căn cứ thực nghiệm cho lựa chọn model và pipeline. |
+| Execution Accuracy: `37.07% -> 40.91%` (`+3.84` điểm phần trăm) | Qwen Coder 14B có baseline mạnh và còn cải thiện khi kết hợp pipeline. |
+| Invalid Syntax: `13.6% -> 3.2%` | Pipeline giảm đáng kể truy vấn không chạy được. |
+| Schema Linking giảm hallucination; Self-Correction sửa lỗi thực thi | Hai cơ chế giải quyết hai loại vấn đề khác nhau. |
+| Lưu ý: chạy được không đồng nghĩa đúng logic | Hệ thống vẫn cần đánh giá semantic correctness. |
+
+Trên slide cần ghi rõ nhãn `Kết quả nghiên cứu trước`, tránh để thầy hiểu rằng đây là metric đã đo lại trên prototype fraud graph hiện tại.
+
+#### Script thuyết trình gợi ý, khoảng 1.5 đến 2 phút
+
+> Lý do nhóm em lựa chọn Qwen2.5-Coder-14B-Instruct không chỉ vì đây là một model hướng đến tác vụ lập trình. Trước đó, nhóm em đã nghiên cứu các Small Language Models cho bài toán Text2Cypher, kết hợp hai kỹ thuật là Schema Linking và Self-Correction.
+>
+> Trên các mô hình cơ sở chưa fine-tune, quy trình này tạo ra cải thiện rõ ràng. Qwen2.5-7B-Instruct tăng Execution Accuracy từ 20.84% lên 29.14%. Đối với Qwen2.5-Coder-14B-Instruct, điểm zero-shot ban đầu đã cao hơn, ở mức 37.07%, và khi kết hợp hai kỹ thuật thì tăng lên 40.91%. Vì vậy, nhóm em chọn biến thể Coder 14B làm model sinh Cypher cho prototype vì nó có nền tảng sinh mã truy vấn tốt hơn trong thiết lập nghiên cứu trước.
+>
+> Kết quả cũng cho thấy lỗi cú pháp giảm đáng kể. Với Qwen Coder 14B, tỷ lệ Invalid Syntax giảm từ 13.6% xuống còn 3.2%. Schema Linking có vai trò lọc và gắn kết câu hỏi với đúng schema, tránh sinh ra node hoặc relationship không tồn tại. Self-Correction có vai trò nhận lỗi từ quá trình thực thi và sửa lại câu Cypher bị sai cú pháp hoặc sai cấu trúc.
+>
+> Tuy nhiên, nhóm em cũng ghi nhận một giới hạn quan trọng. Với một số model đã fine-tune, áp dụng cả pipeline có thể làm giảm độ chính xác, có khả năng do model đã phụ thuộc vào schema đầy đủ trong tập huấn luyện, trong khi Schema Linking lại rút gọn schema động. Ngoài ra, pipeline giảm lỗi cú pháp nhưng chưa đảm bảo đúng logic ngữ nghĩa; một câu Cypher chạy được vẫn có thể trả về sai kết quả nếu sai hướng quan hệ hoặc sai điều kiện lọc.
+>
+> Do đó, prototype hiện tại sử dụng Qwen2.5-Coder-14B-Instruct độc lập cùng prompt schema và cơ chế self-correction như một module hỗ trợ truy vấn. Việc đánh giá chính thức trên graph fraud của hệ thống vẫn là bước cần thực hiện riêng, không đồng nhất với các số liệu nghiên cứu trước.
+
+#### Nếu thầy hỏi: "Đây có phải kết quả của hệ thống đang demo không?"
+
+> Không hoàn toàn. Đây là kết quả từ nghiên cứu trước của nhóm trong thiết lập đánh giá Text2Cypher-2024v1, được dùng để giải thích lựa chọn model và thiết kế Schema Linking kết hợp Self-Correction. Prototype hiện tại dùng graph gian lận và cấu hình service cụ thể, nên cần được đánh giá lại bằng bộ test và metric riêng trước khi khẳng định hiệu năng.
+
+Khi dùng các con số trên trong slide hoặc khóa luận chính thức, cần dẫn nguồn đến bảng kết quả, bài báo hoặc báo cáo nghiên cứu gốc của nhóm.
+
 Sau khi load model:
 
 ```python
