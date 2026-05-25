@@ -1134,6 +1134,175 @@ Nếu thầy hỏi vì sao chưa gọi đây là đánh giá chính thức, tr�
 
 > Hiện tại đây là kiểm tra định tính để xác minh luồng prototype và khả năng tổng quát ngoài few-shot. Đánh giá chính thức cần một tập câu hỏi cố định không nằm trong prompt, ground-truth Cypher hoặc ground-truth kết quả, sau đó đo execution accuracy hoặc semantic correctness.
 
+### 13.8. Bộ Kiểm Thử Tiếng Việt Ít Trùng Trực Tiếp Với Few-Shot
+
+Mục tiêu của lần test này là đánh giá model khi nhận câu hỏi bằng tiếng Việt và có các thao tác chưa được đưa nguyên mẫu vào few-shot, như tính tỷ lệ theo nghề nghiệp, lọc khoảng số tiền và tính trung bình theo cửa hàng.
+
+Lưu ý khi diễn giải kết quả:
+
+- Prompt hiện tại có rule schema và các example tiếng Anh về fraud, merchant, category, location và graph visualization.
+- Prompt chưa chứa các câu tiếng Việt như `bang`, `nghề nghiệp`, `cửa hàng` hoặc `mối liên hệ`.
+- Vì vậy, bộ test này kiểm tra khả năng tiếp nhận tiếng Việt trong miền fraud có hỗ trợ schema/prompt, không chứng minh năng lực tiếng Việt tổng quát của model.
+- Các query dưới đây được đánh giá theo schema và logic mong muốn; tài liệu chưa kèm log thực thi Neo4j cho lần test này.
+
+#### Test 1: Tổng Giá Trị Fraud Theo Bang
+
+Câu hỏi tiếng Việt:
+
+```text
+Bang nào có tổng giá trị giao dịch gian lận lớn nhất?
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)
+WHERE toString(t.is_fraud) = "1"
+RETURN t.node_id AS transaction_id, t.amt AS amount, t.is_fraud AS is_fraud
+ORDER BY toFloat(t.amt) DESC
+LIMIT 1
+```
+
+Đánh giá: **Sai logic ngữ nghĩa**.
+
+- Query hợp lệ và chạy được, nhưng trả về **giao dịch gian lận có số tiền lớn nhất**.
+- Câu hỏi yêu cầu **bang có tổng số tiền fraud lớn nhất**, nên phải dùng `HAS_STATE`, nhóm theo `StateNode` và tính `SUM`.
+- Đây là ví dụ điển hình cho lỗi semantic: Neo4j không báo lỗi cú pháp nên self-correction dựa trên error log khó phát hiện.
+
+Cypher đúng kỳ vọng:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_STATE]->(s:StateNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN s.value AS state, SUM(toFloat(t.amt)) AS total_fraud_amount
+ORDER BY total_fraud_amount DESC
+LIMIT 1
+```
+
+#### Test 2: Tỷ Lệ Fraud Theo Nghề Nghiệp
+
+Câu hỏi tiếng Việt:
+
+```text
+Liệt kê các ngành nghề có tỷ lệ gian lận trên tổng giao dịch cao hơn 2%.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_JOB]->(j:JobNode)
+WITH j.value AS job,
+     COUNT(t) AS total_transactions,
+     SUM(CASE WHEN toString(t.is_fraud) = "1" THEN 1 ELSE 0 END) AS fraud_transactions
+WITH job, total_transactions, fraud_transactions,
+     (toFloat(fraud_transactions) / total_transactions) * 100 AS fraud_rate
+WHERE fraud_rate > 2
+RETURN job, fraud_rate
+ORDER BY fraud_rate DESC
+```
+
+Đánh giá: **Đúng**.
+
+- Model ánh xạ đúng `ngành nghề` sang `JobNode` qua `HAS_JOB`.
+- Tính đúng tỷ lệ phần trăm trên tổng giao dịch của từng nghề.
+- Biết lọc điều kiện sau aggregation bằng `WITH`.
+
+#### Test 3: Đếm Fraud Trong Khoảng Giá Trị
+
+Câu hỏi tiếng Việt:
+
+```text
+Cho biết số lượng giao dịch gian lận có giá trị nằm trong khoảng từ 500 đến 1000.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)
+WHERE toString(t.is_fraud) = "1"
+  AND toFloat(t.amt) >= 500
+  AND toFloat(t.amt) <= 1000
+RETURN COUNT(t) AS fraud_transaction_count
+```
+
+Đánh giá: **Đúng**.
+
+- Query lọc đúng nhãn fraud.
+- Chuyển `amt` sang số trước khi so sánh khoảng.
+- Trả về đúng số lượng giao dịch thay vì danh sách giao dịch.
+
+#### Test 4: Giá Trị Fraud Trung Bình Cao Nhất Theo Cửa Hàng
+
+Câu hỏi tiếng Việt:
+
+```text
+Trong các cửa hàng có giao dịch gian lận, cửa hàng nào có giá trị giao dịch gian lận trung bình cao nhất?
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN m.value AS merchant, AVG(toFloat(t.amt)) AS avg_fraud_amount
+ORDER BY avg_fraud_amount DESC
+LIMIT 1
+```
+
+Đánh giá: **Đúng**.
+
+- Model hiểu `cửa hàng` là `MerchantNode`.
+- Chọn đúng phép tổng hợp `AVG`, không nhầm với `SUM` hoặc `COUNT`.
+- Sắp xếp và lấy kết quả cao nhất đúng yêu cầu.
+
+#### Test 5: Hiển Thị Graph Fraud Liên Kết Danh Mục
+
+Câu hỏi tiếng Việt:
+
+```text
+Hiển thị mối liên hệ giữa các giao dịch gian lận và danh mục mua sắm của chúng, tối đa 20 quan hệ.
+```
+
+Cypher model sinh:
+
+```cypher
+MATCH (t:Transaction)-[r:HAS_CATEGORY]->(c:CategoryNode)
+WHERE toString(t.is_fraud) = "1"
+RETURN t, r, c
+LIMIT 20
+```
+
+Đánh giá: **Đúng**.
+
+- Query trả về node và relationship object để hiển thị đồ thị.
+- Dùng đúng `CategoryNode` và `HAS_CATEGORY`.
+- Có giới hạn số quan hệ theo yêu cầu của câu hỏi.
+
+### 13.9. Tổng Hợp Kết Quả Test Tiếng Việt
+
+| Tiêu chí | Kết quả |
+| --- | ---: |
+| Tổng số câu hỏi tiếng Việt | 5 |
+| Query hợp lệ về cú pháp và sử dụng thành phần schema hiện có | 5/5 |
+| Query đúng ý nghĩa câu hỏi | 4/5 |
+| Query sai semantic nhưng vẫn có thể thực thi | 1/5 |
+
+Kết luận đúng mức:
+
+- Model xử lý đúng nhiều diễn đạt tiếng Việt trong miền fraud, bao gồm `ngành nghề`, `cửa hàng`, lọc khoảng số tiền và yêu cầu trả graph.
+- Model vẫn có thể hiểu sai yêu cầu tổng hợp theo thực thể, như nhầm `tổng giá trị theo bang` thành `giao dịch có giá trị lớn nhất`.
+- Kết quả này củng cố nhu cầu xây dựng bộ đánh giá có expected result, thay vì chỉ kiểm tra query có chạy được hay không.
+
+### 13.10. Script Thuyết Trình Kết Quả Test Tiếng Việt
+
+> Nhóm em thực hiện thêm một kiểm thử với năm câu hỏi hoàn toàn bằng tiếng Việt. Các câu này được thiết kế ít trùng trực tiếp hơn với few-shot example tiếng Anh trong prompt, bao gồm tính tỷ lệ gian lận theo nghề nghiệp, đếm fraud trong một khoảng số tiền, tính giá trị trung bình theo cửa hàng và yêu cầu hiển thị quan hệ đồ thị.
+>
+> Kết quả cho thấy cả năm câu đều sinh ra Cypher hợp lệ về cú pháp và sử dụng các thành phần có trong schema. Trong đó, bốn câu trả lời đúng ý nghĩa yêu cầu. Ví dụ, model hiểu `ngành nghề` để truy vấn qua `JobNode`, hiểu `cửa hàng` để truy vấn qua `MerchantNode`, và khi yêu cầu hiển thị mối liên hệ thì trả về node cùng relationship để frontend biểu diễn graph.
+>
+> Tuy nhiên, một câu thất bại về mặt ngữ nghĩa. Với câu hỏi `Bang nào có tổng giá trị giao dịch gian lận lớn nhất?`, model lại sinh truy vấn tìm một giao dịch fraud có giá trị lớn nhất, thay vì nhóm theo bang và tính tổng. Query này vẫn chạy được trên Neo4j, nên cơ chế self-correction dựa vào lỗi thực thi sẽ không tự nhận biết rằng câu trả lời đã lệch ý người dùng.
+>
+> Từ kết quả này, nhóm em kết luận ở phạm vi thận trọng rằng model có khả năng xử lý câu hỏi tiếng Việt trong domain fraud khi đã được cung cấp schema và rule hỗ trợ. Tuy nhiên, hệ thống vẫn cần bộ test có đáp án chuẩn hoặc kết quả kỳ vọng để đo lỗi semantic, đặc biệt với các câu hỏi yêu cầu aggregation và reasoning trên graph.
+
 ## 14. Những Điểm Mạnh Của Thiết Kế Này
 
 - Tách LLM ra khỏi backend chính, backend không phải gánh GPU.
