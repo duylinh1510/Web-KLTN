@@ -59,7 +59,7 @@ export class Text2CypherService {
     // Bước 2: Self Correction Loop
     const correctionResult = await this.selfCorrectionLoop(
       schemaLinkingResult.cypherV2,
-      schemaLinkingResult.schemaUsed,
+      schemaLinkingResult.fullSchema,
       question,
     );
 
@@ -78,9 +78,12 @@ export class Text2CypherService {
   // Schema Linking: chỉ gọi /generate 2 lần, KHÔNG có self-correction
   // ============================================================
 
-  async generateWithSchemaLinking(
-    question: string,
-  ): Promise<{ cypherV1: string; cypherV2: string; schemaUsed: string }> {
+  async generateWithSchemaLinking(question: string): Promise<{
+    cypherV1: string;
+    cypherV2: string;
+    schemaUsed: string;
+    fullSchema: string;
+  }> {
     // 1. Lấy full schema (từ cache hoặc Neo4j)
     const fullSchema = await this.schemaService.getFullSchema();
 
@@ -101,6 +104,7 @@ export class Text2CypherService {
         cypherV1: cypherV1 ?? 'error',
         cypherV2: 'error',
         schemaUsed: fullSchema,
+        fullSchema,
       };
     }
 
@@ -124,6 +128,7 @@ export class Text2CypherService {
       cypherV1,
       cypherV2: cypherV2 ?? 'error',
       schemaUsed: linkedSchema,
+      fullSchema,
     };
   }
 

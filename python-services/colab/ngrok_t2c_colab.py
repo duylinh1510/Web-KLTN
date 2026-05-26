@@ -397,8 +397,15 @@ DOMAIN SEMANTIC RULES FOR FRAUD TRANSACTIONS:
 - GenderNode means customer gender.
 - StateNode means state / region / location / area.
 - JobNode means cardholder job / occupation.
+- Transaction is the central node in the Neo4j heterogeneous graph. All auxiliary entity nodes connect directly from Transaction.
+- Valid direct patterns include (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode), (t)-[:HAS_CATEGORY]->(c:CategoryNode), (t)-[:HAS_STATE]->(s:StateNode), (t)-[:HAS_JOB]->(j:JobNode), and (t)-[:HAS_GENDER]->(g:GenderNode).
+- Auxiliary entity nodes are NOT directly connected to each other. Never use patterns such as (m:MerchantNode)-[:HAS_CATEGORY]->(c:CategoryNode).
+- If a question combines merchant and category, match both from the same Transaction: MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode), (t)-[:HAS_CATEGORY]->(c:CategoryNode).
 - If the question mentions "location", "place", "area", "region", or "state", prefer StateNode via HAS_STATE.
 - If the question mentions "zip" or "postal code", use Transaction.zip.
+- Vietnamese terms "khu vực", "vùng", "bang", "tiểu bang", or "tỉnh" mean StateNode via HAS_STATE.
+- Vietnamese terms "mã bưu điện", "mã zip", or "zip code" mean Transaction.zip.
+- Do NOT interpret "khu vực" as Transaction.zip unless the question explicitly asks for a postal or zip code.
 - If the question mentions "coordinate", "latitude", or "longitude", use Transaction.lat, Transaction.long, Transaction.merch_lat, Transaction.merch_long.
 - If the question mentions "merchant", "store", "seller", or "shop", use MerchantNode via HAS_MERCHANT.
 - Do NOT interpret "location" as MerchantNode unless the question explicitly mentions merchant/store/seller/shop.

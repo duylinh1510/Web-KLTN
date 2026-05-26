@@ -26,7 +26,9 @@ export class SchemaService {
     if (id) {
       const cached = this.loadCachedSchema(id);
       if (cached) {
-        console.log(`[SchemaService] Schema loaded from cache file: ${this.getCacheFileName(id)}`);
+        console.log(
+          `[SchemaService] Schema loaded from cache file: ${this.getCacheFileName(id)}`,
+        );
         return cached;
       }
     }
@@ -38,13 +40,17 @@ export class SchemaService {
     // Lưu cache nếu có database name
     if (id) {
       this.saveSchemaToDisk(id, schema);
-      console.log(`[SchemaService] Schema saved to cache: ${this.getCacheFileName(id)}`);
+      console.log(
+        `[SchemaService] Schema saved to cache: ${this.getCacheFileName(id)}`,
+      );
     }
 
     return schema;
   }
 
-  async getSuggestedFraudPrompts(database?: string | null): Promise<SuggestedPrompt[]> {
+  async getSuggestedFraudPrompts(
+    database?: string | null,
+  ): Promise<SuggestedPrompt[]> {
     const schema = await this.getFullSchema(database);
     return this.buildFraudPrompts(schema);
   }
@@ -116,7 +122,11 @@ export class SchemaService {
         const propExamples = new Map<string, string>();
         for (const propName of props) {
           if (!propName) continue;
-          const example = await this.getRelSampleValue(session, relType, propName);
+          const example = await this.getRelSampleValue(
+            session,
+            relType,
+            propName,
+          );
           if (example !== null) {
             propExamples.set(propName, String(example));
           }
@@ -174,35 +184,39 @@ export class SchemaService {
   // ============================================================
 
   filterSchemaByQuery(cypherQuery: string, fullSchema: string): string {
-    // Parse node labels từ full schema
     const allLabels = this.extractNodeLabelsFromSchema(fullSchema);
 
-    // Nếu ≤3 labels → trả full schema
-    if (allLabels.length <= 3) {
-      console.log(`[SchemaService] Schema linking: ≤3 labels (${allLabels.length}), returning full schema`);
+    // A wrong V1 can remove the node needed to recover the semantic query.
+    // Keep compact schemas intact; filtering is only useful once context is large.
+    if (allLabels.length <= 10 || fullSchema.length <= 4000) {
+      console.log(
+        `[SchemaService] Schema linking: compact schema (${allLabels.length} labels, ${fullSchema.length} chars), returning full schema`,
+      );
       return fullSchema;
     }
 
-    // Tìm mentioned labels trong cypher query
     const mentionedLabels = this.findMentionedLabels(cypherQuery, allLabels);
 
-    // Không tìm thấy → trả full schema
     if (mentionedLabels.size === 0) {
-      console.log('[SchemaService] Schema linking: no mentioned labels found, returning full schema');
+      console.log(
+        '[SchemaService] Schema linking: no mentioned labels found, returning full schema',
+      );
       return fullSchema;
     }
 
-    console.log(`[SchemaService] Schema linking: found labels [${[...mentionedLabels].join(', ')}]`);
+    console.log(
+      `[SchemaService] Schema linking: found labels [${[...mentionedLabels].join(', ')}]`,
+    );
 
-    // Filter schema chỉ giữ labels liên quan
     return this.filterSchemaString(fullSchema, mentionedLabels);
   }
 
   private buildFraudPrompts(schema: string): SuggestedPrompt[] {
     const nodes = this.parseNodeProps(schema);
     const rels = this.parseRelationships(schema);
-    const transactionNode =
-      nodes.find((n) => /transaction|payment|order/i.test(n.label)) ??
+    const transactionNode = nodes.find((n) =>
+      /transaction|payment|order/i.test(n.label),
+    ) ??
       nodes[0] ?? { label: 'Transaction', props: [] };
     const fraudProp =
       this.findFraudProperty(transactionNode.props) ??
@@ -242,7 +256,9 @@ export class SchemaService {
     }
 
     const numericProp =
-      transactionNode.props.find((p) => /amt|amount|money|price|value|score/i.test(p)) ??
+      transactionNode.props.find((p) =>
+        /amt|amount|money|price|value|score/i.test(p),
+      ) ??
       transactionNode.props.find((p) => p !== fraudProp && p !== 'node_id');
     if (numericProp) {
       prompts.push({
@@ -269,7 +285,10 @@ export class SchemaService {
         inNodeSection = true;
         continue;
       }
-      if (line.startsWith('Relationship properties:') || line.startsWith('Relationship structure:')) {
+      if (
+        line.startsWith('Relationship properties:') ||
+        line.startsWith('Relationship structure:')
+      ) {
         inNodeSection = false;
         continue;
       }
@@ -287,7 +306,9 @@ export class SchemaService {
     return nodes;
   }
 
-  private parseRelationships(schema: string): { from: string; rel: string; to: string }[] {
+  private parseRelationships(
+    schema: string,
+  ): { from: string; rel: string; to: string }[] {
     const rels: { from: string; rel: string; to: string }[] = [];
     for (const line of schema.split('\n')) {
       const match = line.match(/^- \(([^)]+)\)-\[:([^\]]+)\]->\(([^)]+)\)/);
@@ -356,7 +377,11 @@ export class SchemaService {
   // PRIVATE: Example helpers
   // ============================================================
 
-  private async getSampleValue(session: any, label: string, propName: string): Promise<string | null> {
+  private async getSampleValue(
+    session: any,
+    label: string,
+    propName: string,
+  ): Promise<string | null> {
     try {
       const result = await session.run(
         `MATCH (n:\`${label}\`) WHERE n.\`${propName}\` IS NOT NULL RETURN n.\`${propName}\` AS value LIMIT 1`,
@@ -371,7 +396,11 @@ export class SchemaService {
     return null;
   }
 
-  private async getRelSampleValue(session: any, relType: string, propName: string): Promise<string | null> {
+  private async getRelSampleValue(
+    session: any,
+    relType: string,
+    propName: string,
+  ): Promise<string | null> {
     try {
       const result = await session.run(
         `MATCH ()-[r:\`${relType}\`]->() WHERE r.\`${propName}\` IS NOT NULL RETURN r.\`${propName}\` AS value LIMIT 1`,
@@ -417,7 +446,10 @@ export class SchemaService {
         inNodeSection = true;
         continue;
       }
-      if (line.startsWith('Relationship properties:') || line.startsWith('Relationship structure:')) {
+      if (
+        line.startsWith('Relationship properties:') ||
+        line.startsWith('Relationship structure:')
+      ) {
         inNodeSection = false;
         continue;
       }
@@ -433,12 +465,17 @@ export class SchemaService {
     return labels;
   }
 
-  private findMentionedLabels(queryText: string, allLabels: string[]): Set<string> {
+  private findMentionedLabels(
+    queryText: string,
+    allLabels: string[],
+  ): Set<string> {
     const mentioned = new Set<string>();
     const queryLower = queryText.toLowerCase();
 
     for (const label of allLabels) {
-      const pattern = new RegExp('\\b' + this.escapeRegex(label.toLowerCase()) + '\\b');
+      const pattern = new RegExp(
+        '\\b' + this.escapeRegex(label.toLowerCase()) + '\\b',
+      );
       if (pattern.test(queryLower)) {
         mentioned.add(label);
       }
@@ -447,7 +484,10 @@ export class SchemaService {
     return mentioned;
   }
 
-  private filterSchemaString(fullSchema: string, mentionedLabels: Set<string>): string {
+  private filterSchemaString(
+    fullSchema: string,
+    mentionedLabels: Set<string>,
+  ): string {
     const lines = fullSchema.split('\n');
     const filteredLines: string[] = [];
     let currentSection = '';

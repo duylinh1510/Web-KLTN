@@ -4,6 +4,7 @@ import { useQueryStore } from "../../store/queryStore";
 import type { GraphNode } from "../../types";
 
 // Bảng màu theo label — dễ phân biệt cho hội đồng
+// Exact match first, then fuzzy match stripping "Node" suffix
 const LABEL_COLORS: Record<string, string> = {
   Transaction: "#3b82f6", // blue
   Card: "#f97316",        // orange
@@ -12,11 +13,34 @@ const LABEL_COLORS: Record<string, string> = {
   Email: "#ec4899",       // pink
   User: "#10b981",        // emerald
   Account: "#eab308",     // yellow
+  Merchant: "#f43f5e",    // rose
+  Category: "#8b5cf6",    // violet
+  City: "#14b8a6",        // teal
+  State: "#f59e0b",       // amber
+  Job: "#6366f1",         // indigo
 };
+
+// Palette for labels not in LABEL_COLORS — deterministic by label hash
+const DYNAMIC_PALETTE = [
+  "#e879f9", "#fb923c", "#22d3ee", "#a3e635",
+  "#fbbf24", "#c084fc", "#34d399", "#f87171",
+  "#60a5fa", "#facc15", "#2dd4bf", "#fb7185",
+];
 const DEFAULT_NODE_COLOR = "#64748b"; // slate
 
 function getNodeColor(label: string): string {
-  return LABEL_COLORS[label] ?? DEFAULT_NODE_COLOR;
+  // 1. Exact match
+  if (label in LABEL_COLORS) return LABEL_COLORS[label];
+  // 2. Strip "Node" suffix — e.g. "MerchantNode" → "Merchant"
+  const stripped = label.replace(/Node$/i, "");
+  if (stripped !== label && stripped in LABEL_COLORS) return LABEL_COLORS[stripped];
+  // 3. Deterministic color from palette based on simple hash
+  if (label.length > 0) {
+    let hash = 0;
+    for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) | 0;
+    return DYNAMIC_PALETTE[Math.abs(hash) % DYNAMIC_PALETTE.length];
+  }
+  return DEFAULT_NODE_COLOR;
 }
 
 type ForceNode = GraphNode & { x?: number; y?: number };

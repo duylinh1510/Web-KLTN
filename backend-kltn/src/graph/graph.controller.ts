@@ -108,7 +108,7 @@ export class GraphController {
       const cypher = `
         MATCH (n:${meta.nodeLabel})
         WITH n LIMIT 10
-        OPTIONAL MATCH (n)-[r]-(m:${meta.nodeLabel})
+        OPTIONAL MATCH (n)-[r]-(m)
         RETURN n, r, m
       `;
       const result = await session.run(cypher);
