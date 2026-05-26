@@ -1,13 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
-import * as path from 'path';
 import { Neo4jService } from '../neo4j/neo4j.service';
+import { DatasetService } from '../mongodb/dataset.service';
+import { PipelineConfigService } from '../mongodb/pipeline-config.service';
+import { EncodingMapService } from '../mongodb/encoding-map.service';
 import { FullSchema } from './interfaces/classification-schema.interface';
 
 /**
  * Metadata snapshot của dataset đang nằm trong Neo4j.
- * File: `<output_dir>/_latest_<database>.json`
+ * Trước: lưu file `_latest_<database>.json`. Giờ: MongoDB collection `datasets`.
  */
 export interface DatasetMeta {
   jobId: string;
@@ -29,8 +30,7 @@ export interface DatasetMeta {
 
 /**
  * Thông tin CSV gốc — nguồn sự thật duy nhất cho append validation.
- * File: `<output_dir>/_raw_<database>.json`
- * Ghi một lần trong fullBuild, KHÔNG ghi đè khi append.
+ * Trước: file `_raw_<database>.json`. Giờ: MongoDB collection `pipeline_configs`.
  */
 export interface RawInfo {
   /** Cột user chọn làm ID (tên GỐC trong CSV, chưa rename). VD: 'trans_num' */
@@ -57,77 +57,126 @@ export class DatasetMetaService {
   private readonly logger = new Logger(DatasetMetaService.name);
 
   constructor(
-    private readonly config: ConfigService,
     private readonly neo4jService: Neo4jService,
+    private readonly datasetService: DatasetService,
+    private readonly pipelineConfigService: PipelineConfigService,
+    private readonly encodingMapService: EncodingMapService,
   ) {}
 
   // ============================================================
-  // Meta (_latest_<database>.json)
+  // Meta (MongoDB: datasets + pipeline_configs + encoding_maps)
   // ============================================================
 
-  loadLatest(database?: string | null): DatasetMeta | null {
-    const filePath = this.metaFilePath(database);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as DatasetMeta;
-      if (!parsed?.nodeLabel || !Array.isArray(parsed?.columns)) {
-        this.logger.warn(`Metadata file corrupted: ${filePath}`);
-        return null;
-      }
-      return parsed;
-    } catch (e: any) {
-      this.logger.warn(`Đọc metadata lỗi (${filePath}): ${e?.message ?? e}`);
+  async loadLatest(database?: string | null): Promise<DatasetMeta | null> {
+    const db = database || 'neo4j';
+    const [dataset, config, encodingMap] = await Promise.all([
+      this.datasetService.findByDatabase(db),
+      this.pipelineConfigService.findByDatabase(db),
+      this.encodingMapService.findByDatabase(db),
+    ]);
+
+    if (!dataset?.nodeLabel || !Array.isArray(dataset?.columns)) {
       return null;
     }
+
+    // Reconstruct DatasetMeta from 3 collections
+    const schema: FullSchema = {
+      node_id: 'node_id',
+      relation_cols: config?.relationCols ?? [],
+      feature_cols: config?.featureCols ?? [],
+      encoded_feature_cols: config?.encodedFeatureCols ?? [],
+      encoding_maps: encodingMap?.maps ?? {},
+      target_label: dataset.targetLabel,
+      train_ratio: config?.trainRatio ?? 0.4,
+      val_ratio: config?.valRatio ?? 0.2,
+      seed: config?.seed ?? 42,
+      max_group_size: config?.maxGroupSize ?? 500,
+    };
+
+    return {
+      jobId: '', // jobId is tracked in pipeline_runs now
+      nodeLabel: dataset.nodeLabel,
+      columns: dataset.columns,
+      targetLabel: dataset.targetLabel,
+      schema,
+      hasModel: dataset.hasModel,
+      activeModelPath: dataset.activeModelPath,
+      trainingMetrics: dataset.trainingMetrics,
+      builtAt: (dataset as any).createdAt?.toISOString?.() ?? new Date().toISOString(),
+    };
   }
 
-  saveLatest(database: string | null | undefined, meta: DatasetMeta): void {
-    const filePath = this.metaFilePath(database);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(meta, null, 2), 'utf-8');
-    this.logger.log(`Saved dataset metadata → ${filePath}`);
+  async saveLatest(
+    database: string | null | undefined,
+    meta: DatasetMeta,
+  ): Promise<void> {
+    const db = database || 'neo4j';
+
+    // 1. Save dataset state
+    await this.datasetService.upsert(db, {
+      nodeLabel: meta.nodeLabel,
+      targetLabel: meta.targetLabel,
+      columns: meta.columns,
+      hasModel: meta.hasModel ?? false,
+      activeModelPath: meta.activeModelPath,
+      trainingMetrics: meta.trainingMetrics,
+    });
+
+    // 2. Save pipeline config (without encoding_maps)
+    await this.pipelineConfigService.save(db, {
+      relationCols: meta.schema.relation_cols,
+      featureCols: meta.schema.feature_cols,
+      encodedFeatureCols: meta.schema.encoded_feature_cols,
+      trainRatio: meta.schema.train_ratio,
+      valRatio: meta.schema.val_ratio,
+      seed: meta.schema.seed,
+      maxGroupSize: meta.schema.max_group_size,
+    });
+
+    // 3. Save encoding_maps separately (can be very large)
+    if (
+      meta.schema.encoding_maps &&
+      Object.keys(meta.schema.encoding_maps).length > 0
+    ) {
+      await this.encodingMapService.save(db, meta.schema.encoding_maps);
+    }
+
+    this.logger.log(`Saved dataset metadata → MongoDB (db=${db})`);
   }
 
   // ============================================================
-  // RawInfo (_raw_<database>.json) — nguồn sự thật cho append
+  // RawInfo (MongoDB: pipeline_configs)
   // ============================================================
 
-  /**
-   * Lưu thông tin CSV gốc. Gọi một lần trong fullBuild, KHÔNG gọi lại khi append.
-   */
-  saveRawInfo(database: string | null | undefined, info: RawInfo): void {
-    const filePath = this.rawInfoFilePath(database);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(info, null, 2), 'utf-8');
+  async saveRawInfo(
+    database: string | null | undefined,
+    info: RawInfo,
+  ): Promise<void> {
+    const db = database || 'neo4j';
+    await this.pipelineConfigService.save(db, {
+      originalIdCol: info.originalIdCol,
+      rawColumns: info.rawColumns,
+    });
     this.logger.log(
-      `Saved raw info → ${filePath}` +
+      `Saved raw info → MongoDB (db=${db})` +
         ` (originalIdCol=${info.originalIdCol}, cols=${info.rawColumns.length})`,
     );
   }
 
-  /**
-   * Đọc `_raw_<database>.json`. Trả null nếu file chưa tồn tại.
-   */
-  loadRawInfo(database?: string | null): RawInfo | null {
-    const filePath = this.rawInfoFilePath(database);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as RawInfo;
-      if (!parsed?.originalIdCol || !Array.isArray(parsed?.rawColumns)) {
-        this.logger.warn(`RawInfo file corrupted: ${filePath}`);
-        return null;
-      }
-      return parsed;
-    } catch (e: any) {
-      this.logger.warn(`Đọc rawInfo lỗi (${filePath}): ${e?.message ?? e}`);
+  async loadRawInfo(database?: string | null): Promise<RawInfo | null> {
+    const db = database || 'neo4j';
+    const config = await this.pipelineConfigService.findByDatabase(db);
+    if (!config?.originalIdCol || !Array.isArray(config?.rawColumns)) {
       return null;
     }
+    return {
+      originalIdCol: config.originalIdCol,
+      rawColumns: config.rawColumns,
+    };
   }
 
   // ============================================================
-  // Neo4j helpers
+  // Neo4j helpers (unchanged — these query Neo4j directly)
   // ============================================================
 
   async countNodes(nodeLabel: string): Promise<number> {
@@ -210,7 +259,7 @@ export class DatasetMetaService {
   }
 
   async getDatasetInfo(database?: string | null): Promise<DatasetInfo> {
-    const meta = this.loadLatest(database);
+    const meta = await this.loadLatest(database);
     if (!meta) return { hasData: false };
 
     const [numNodes, totalGraphNodes, totalGraphRelationships] =
@@ -241,26 +290,6 @@ export class DatasetMetaService {
   // ============================================================
   // Private
   // ============================================================
-
-  private metaFilePath(database?: string | null): string {
-    const root =
-      this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
-    const safeDatabase = database ? this.sanitizeDatabaseName(database) : null;
-    const filename = safeDatabase ? `_latest_${safeDatabase}.json` : '_latest.json';
-    return path.resolve(process.cwd(), root, filename);
-  }
-
-  private rawInfoFilePath(database?: string | null): string {
-    const root =
-      this.config.get<string>('CSV2GRAPH_OUTPUT_DIR') ?? 'data/csv2graph';
-    const safeDatabase = database ? this.sanitizeDatabaseName(database) : null;
-    const filename = safeDatabase ? `_raw_${safeDatabase}.json` : '_raw.json';
-    return path.resolve(process.cwd(), root, filename);
-  }
-
-  private sanitizeDatabaseName(database: string): string {
-    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-  }
 
   private modelExists(meta: DatasetMeta): boolean {
     if (meta.hasModel !== true) return false;

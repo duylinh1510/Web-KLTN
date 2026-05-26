@@ -9,10 +9,14 @@ import {
 } from '@nestjs/common';
 import { Neo4jService } from './neo4j.service';
 import { ConnectNeo4jDto } from './dto/connect-neo4j.dto';
+import { ConnectionService } from '../mongodb/connection.service';
 
 @Controller('neo4j')
 export class Neo4jController {
-  constructor(private readonly neo4jService: Neo4jService) {}
+  constructor(
+    private readonly neo4jService: Neo4jService,
+    private readonly connectionService: ConnectionService,
+  ) {}
 
   @Post('connect')
   @HttpCode(HttpStatus.OK)
@@ -24,6 +28,9 @@ export class Neo4jController {
       dto.password,
       database,
     );
+    // Lưu connection info vào MongoDB
+    await this.connectionService.upsert(dto.uri, database);
+
     return {
       status: 'success',
       message: `Đã kết nối tới ${dto.uri}, database: ${database}`,

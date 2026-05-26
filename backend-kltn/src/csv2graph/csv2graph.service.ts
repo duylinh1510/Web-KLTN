@@ -12,6 +12,7 @@ import { DataPtService } from './data-pt.service';
 import { GnnTrainService } from './gnn-train.service';
 import { GnnInferenceService } from './gnn-inference.service';
 import { DatasetMetaService, DatasetMeta, RawInfo } from './dataset-meta.service';
+import { PipelineRunService } from '../mongodb/pipeline-run.service';
 import { Csv2GraphRunDto } from './dto/csv2graph-run.dto';
 import {
   Csv2GraphResult,
@@ -55,6 +56,7 @@ export class Csv2GraphService {
     private readonly gnnTrain: GnnTrainService,
     private readonly gnnInference: GnnInferenceService,
     private readonly datasetMeta: DatasetMetaService,
+    private readonly pipelineRunService: PipelineRunService,
   ) {}
 
   async run(
@@ -63,7 +65,7 @@ export class Csv2GraphService {
     dto: Csv2GraphRunDto,
   ): Promise<Csv2GraphResult> {
     const database = this.neo4j.getCurrentDatabase();
-    const meta = this.datasetMeta.loadLatest(database);
+    const meta = await this.datasetMeta.loadLatest(database);
     const numExistingNodes = meta
       ? await this.datasetMeta.countNodes(meta.nodeLabel)
       : 0;
@@ -204,7 +206,7 @@ export class Csv2GraphService {
     // Lưu _raw_<database>.json — nguồn sự thật duy nhất cho append validation.
     // headers = tên cột GỐC (chưa rename), originalIdCol = cột user chọn làm ID.
     if (ingestNeo4j) {
-      this.datasetMeta.saveRawInfo(database, {
+      await this.datasetMeta.saveRawInfo(database, {
         originalIdCol,
         rawColumns: headers,  // headers TRƯỚC ensureNodeId → vẫn có tên gốc
       });
@@ -329,7 +331,7 @@ export class Csv2GraphService {
       ];
       const pretrainedModelPath = pretrained?.activeModelPath;
       const activeModelPath = training?.activeModelPath ?? pretrainedModelPath;
-      this.datasetMeta.saveLatest(database, {
+      await this.datasetMeta.saveLatest(database, {
         jobId,
         nodeLabel,
         columns: canonicalColumns,
@@ -344,6 +346,22 @@ export class Csv2GraphService {
         builtAt: new Date().toISOString(),
       });
     }
+
+    // Cleanup CSV trung gian (giữ data.pt + schema.json)
+    this.csvOutput.cleanupJobDir(jobDir);
+
+    // Lưu pipeline run history
+    await this.pipelineRunService.create({
+      database: database || 'neo4j',
+      jobId,
+      mode: 'full',
+      fileName: originalFileName,
+      stats: stats as any,
+      training: training as any ?? null,
+      inference: null,
+      dataPtPath: files.dataPt,
+      completedAt: new Date(),
+    });
 
     this.logger.log(`====== JOB ${jobId} DONE ======`);
     return {
@@ -425,7 +443,7 @@ export class Csv2GraphService {
 
     // ── [2/6] Đọc _raw_<database>.json và validate columns ──
     this.logger.log('[2/6] Validate columns against _raw_ file...');
-    const rawInfo = this.datasetMeta.loadRawInfo(database);
+    const rawInfo = await this.datasetMeta.loadRawInfo(database);
     if (!rawInfo) {
       throw new HttpException(
         `Không tìm thấy thông tin CSV gốc (_raw_${database ?? ''}.json). ` +
@@ -605,6 +623,21 @@ export class Csv2GraphService {
     } else {
       this.logger.log('[6/6] Skip Neo4j ingestion (ingestNeo4j=false)');
     }
+
+    // Cleanup CSV trung gian (giữ data.pt + schema.json)
+    this.csvOutput.cleanupJobDir(jobDir);
+
+    // Lưu pipeline run history
+    await this.pipelineRunService.create({
+      database: database || 'neo4j',
+      jobId,
+      mode: 'append',
+      fileName: originalFileName,
+      stats: stats as any,
+      training: null,
+      inference: inference as any ?? null,
+      completedAt: new Date(),
+    });
 
     this.logger.log(
       `====== APPEND JOB ${jobId} DONE ======`,

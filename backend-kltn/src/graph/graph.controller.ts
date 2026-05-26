@@ -13,6 +13,7 @@ import { DatasetMetaService } from '../csv2graph/dataset-meta.service';
 import { formatRecords } from './graph.formatter';
 import { QueryDto } from './dto/query.dto';
 import { CypherReadOnlyGuardService } from '../text2cypher/cypher-readonly-guard.service';
+import { HistoryService } from '../history/history.service';
 
 @Controller('graph')
 export class GraphController {
@@ -22,6 +23,7 @@ export class GraphController {
     private readonly schemaService: SchemaService,
     private readonly datasetMeta: DatasetMetaService,
     private readonly readOnlyGuard: CypherReadOnlyGuardService,
+    private readonly historyService: HistoryService,
   ) {}
 
   @Post('query')
@@ -51,6 +53,21 @@ export class GraphController {
       const queryResult = await session.run(result.finalCypher);
       const { nodes, links, scalars } = formatRecords(queryResult.records);
 
+      // Auto-save query to MongoDB
+      const database = this.neo4jService.getCurrentDatabase() || 'neo4j';
+      this.historyService.save({
+        database,
+        prompt: dto.prompt,
+        cypher: result.finalCypher,
+        graphData: { nodes, links } as any,
+        scalars: scalars as any,
+        metadata: {
+          retries: result.retries,
+          cypherV1: result.cypherV1,
+          cypherV2: result.cypherV2,
+        },
+      }).catch(() => {}); // fire-and-forget
+
       return {
         status: 'success',
         generatedCypher: result.finalCypher,
@@ -64,6 +81,16 @@ export class GraphController {
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+
+      // Save failed query too
+      const database = this.neo4jService.getCurrentDatabase() || 'neo4j';
+      this.historyService.save({
+        database,
+        prompt: dto.prompt,
+        cypher: result.finalCypher,
+        error: msg,
+      }).catch(() => {});
+
       throw new HttpException(
         `Cypher execution error: ${msg}`,
         HttpStatus.BAD_REQUEST,
@@ -89,7 +116,7 @@ export class GraphController {
       );
     }
     const database = this.neo4jService.getCurrentDatabase();
-    const meta = this.datasetMeta.loadLatest(database);
+    const meta = await this.datasetMeta.loadLatest(database);
     if (!meta) {
       throw new HttpException(
         'Database rỗng, vui lòng upload CSV trước',
@@ -140,7 +167,7 @@ export class GraphController {
       );
     }
     const database = this.neo4jService.getCurrentDatabase();
-    const meta = this.datasetMeta.loadLatest(database);
+    const meta = await this.datasetMeta.loadLatest(database);
     if (!meta) {
       throw new HttpException(
         'Database rỗng, vui lòng upload CSV trước',

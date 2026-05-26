@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Neo4jService } from '../neo4j/neo4j.service';
-import * as fs from 'fs';
-import * as path from 'path';
+import { DatasetService } from '../mongodb/dataset.service';
 
 export interface SuggestedPrompt {
   label: string;
@@ -10,10 +9,10 @@ export interface SuggestedPrompt {
 
 @Injectable()
 export class SchemaService {
-  // Đường dẫn folder cache schema
-  private readonly cacheDir = path.resolve(process.cwd(), 'data', 'schemas');
-
-  constructor(private readonly neo4jService: Neo4jService) {}
+  constructor(
+    private readonly neo4jService: Neo4jService,
+    private readonly datasetService: DatasetService,
+  ) {}
 
   // ============================================================
   // PUBLIC: Lấy full schema (cache hoặc Neo4j)
@@ -22,12 +21,12 @@ export class SchemaService {
   async getFullSchema(database?: string | null): Promise<string> {
     const id = database ?? this.neo4jService.getCurrentDatabase();
 
-    // Nếu có database name → kiểm tra cache file
+    // Nếu có database name → kiểm tra cache trong MongoDB
     if (id) {
-      const cached = this.loadCachedSchema(id);
+      const cached = await this.loadCachedSchema(id);
       if (cached) {
         console.log(
-          `[SchemaService] Schema loaded from cache file: ${this.getCacheFileName(id)}`,
+          `[SchemaService] Schema loaded from MongoDB cache (db=${id})`,
         );
         return cached;
       }
@@ -39,9 +38,9 @@ export class SchemaService {
 
     // Lưu cache nếu có database name
     if (id) {
-      this.saveSchemaToDisk(id, schema);
+      await this.saveSchemaToDb(id, schema);
       console.log(
-        `[SchemaService] Schema saved to cache: ${this.getCacheFileName(id)}`,
+        `[SchemaService] Schema saved to MongoDB (db=${id})`,
       );
     }
 
@@ -335,42 +334,22 @@ export class SchemaService {
   // PRIVATE: Cache helpers
   // ============================================================
 
-  private loadCachedSchema(database: string): string | null {
-    const filePath = this.getCacheFilePath(database);
+  private async loadCachedSchema(database: string): Promise<string | null> {
     try {
-      if (fs.existsSync(filePath)) {
-        return fs.readFileSync(filePath, 'utf-8');
-      }
+      const dataset = await this.datasetService.findByDatabase(database);
+      return dataset?.graphSchema ?? null;
     } catch (err) {
-      console.log(`[SchemaService] Error reading cache file: ${err}`);
+      console.log(`[SchemaService] Error reading schema from MongoDB: ${err}`);
     }
     return null;
   }
 
-  private saveSchemaToDisk(database: string, schema: string): void {
-    const filePath = this.getCacheFilePath(database);
+  private async saveSchemaToDb(database: string, schema: string): Promise<void> {
     try {
-      // Tạo folder nếu chưa tồn tại
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(filePath, schema, 'utf-8');
+      await this.datasetService.updateGraphSchema(database, schema);
     } catch (err) {
-      console.log(`[SchemaService] Error saving cache file: ${err}`);
+      console.log(`[SchemaService] Error saving schema to MongoDB: ${err}`);
     }
-  }
-
-  private getCacheFilePath(database: string): string {
-    return path.join(this.cacheDir, this.getCacheFileName(database));
-  }
-
-  private getCacheFileName(database: string): string {
-    return `schema_${this.sanitizeDatabaseName(database)}.txt`;
-  }
-
-  private sanitizeDatabaseName(database: string): string {
-    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
   }
 
   // ============================================================

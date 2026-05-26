@@ -6,8 +6,7 @@ import {
 } from '@nestjs/common';
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import axios from 'axios';
-import * as fs from 'fs';
-import * as path from 'path';
+import { DatasetService } from '../mongodb/dataset.service';
 
 /**
  * Neo4jService — quản lý kết nối driver + database selection.
@@ -22,6 +21,8 @@ import * as path from 'path';
 export class Neo4jService implements OnModuleDestroy {
   private driver: Driver | null = null;
   private currentUri: string | null = null;
+
+  constructor(private readonly datasetService: DatasetService) {}
 
   /**
    * Database đang active (từ SHOW DATABASES).
@@ -350,10 +351,14 @@ export class Neo4jService implements OnModuleDestroy {
 
   private async assertDatabaseUsable(database: string): Promise<void> {
     const totalNodes = await this.countAllNodes();
-    if (totalNodes === 0 || this.schemaCacheExists(database)) return;
+    if (totalNodes === 0) return;
+
+    // Check schema cache in MongoDB instead of file
+    const dataset = await this.datasetService.findByDatabase(database);
+    if (dataset?.graphSchema) return;
 
     throw new HttpException(
-      `Database '${database}' đã có dữ liệu nhưng hệ thống chưa có schema cache '${this.schemaCacheFileName(database)}'. Vui lòng chọn đúng database hoặc tạo/đổi tên schema tương ứng.`,
+      `Database '${database}' đã có dữ liệu nhưng hệ thống chưa có schema cache. Vui lòng upload CSV hoặc chọn đúng database.`,
       HttpStatus.BAD_REQUEST,
     );
   }
@@ -367,27 +372,6 @@ export class Neo4jService implements OnModuleDestroy {
     } finally {
       await session.close();
     }
-  }
-
-  private schemaCacheExists(database: string): boolean {
-    return fs.existsSync(this.schemaCacheFilePath(database));
-  }
-
-  private schemaCacheFilePath(database: string): string {
-    return path.resolve(
-      process.cwd(),
-      'data',
-      'schemas',
-      this.schemaCacheFileName(database),
-    );
-  }
-
-  private schemaCacheFileName(database: string): string {
-    return `schema_${this.sanitizeDatabaseName(database)}.txt`;
-  }
-
-  private sanitizeDatabaseName(database: string): string {
-    return database.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
   }
 
   private async clearConnection(): Promise<void> {

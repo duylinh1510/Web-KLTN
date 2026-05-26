@@ -8,11 +8,15 @@ import { AiModule } from './ai/ai.module';
 import { Text2CypherModule } from './text2cypher/text2cypher.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { Csv2GraphModule } from './csv2graph/csv2graph.module';
+import { MongoDbModule } from './mongodb/mongodb.module';
+import { HistoryModule } from './history/history.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
+    MongoDbModule,
+    HistoryModule,
     Neo4jModule,
     GraphModule,
     AiModule,

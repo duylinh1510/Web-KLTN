@@ -139,4 +139,34 @@ export class CsvOutputService {
   private sanitizeFileName(name: string): string {
     return name.replace(/[^a-zA-Z0-9._-]/g, '_');
   }
+
+  /**
+   * Xóa file CSV trung gian trong jobDir sau khi import Neo4j thành công.
+   * Giữ lại các file trong `keepFiles` (mặc định: data.pt, schema.json).
+   */
+  cleanupJobDir(
+    jobDir: string,
+    keepFiles: string[] = ['data.pt', 'schema.json'],
+  ): void {
+    try {
+      const keepSet = new Set(keepFiles);
+      const entries = fs.readdirSync(jobDir);
+      let deleted = 0;
+      for (const entry of entries) {
+        if (keepSet.has(entry)) continue;
+        const fullPath = path.join(jobDir, entry);
+        const stat = fs.statSync(fullPath);
+        if (stat.isFile()) {
+          fs.unlinkSync(fullPath);
+          deleted++;
+          this.logger.log(`  Deleted: ${entry}`);
+        }
+      }
+      this.logger.log(
+        `cleanupJobDir: deleted ${deleted} files, kept ${keepFiles.join(', ')}`,
+      );
+    } catch (err: any) {
+      this.logger.warn(`cleanupJobDir error: ${err?.message ?? err}`);
+    }
+  }
 }
