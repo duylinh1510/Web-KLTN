@@ -1,0 +1,100 @@
+%% Sơ đồ hoạt động - CSV2Graph Full Build / Train / Demo Model
+%% Áp dụng khi database chưa có Transaction nodes hiện hữu.
+flowchart LR
+  classDef action fill:#ffffff,stroke:#334155,color:#0f172a;
+  classDef decision fill:#fff7ed,stroke:#c2410c,color:#0f172a;
+  classDef startEnd fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  classDef error fill:#fef2f2,stroke:#dc2626,color:#7f1d1d;
+  classDef data fill:#eff6ff,stroke:#2563eb,color:#1e3a8a;
+  classDef ai fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95;
+
+  subgraph U["Người dùng"]
+    direction TB
+    U0([Bắt đầu]):::startEnd
+    U1["Chọn CSV đầu tiên"]:::action
+    U2["Chọn Transaction ID,<br/>Node Label và chế độ build"]:::action
+    U3["Bấm Build Graph"]:::action
+    U4["Xem thống kê dataset<br/>và graph preview"]:::action
+    UE["Xem lỗi build"]:::error
+    UZ([Kết thúc]):::startEnd
+    U0 --> U1
+    U2 --> U3
+    U4 --> UZ
+    UE --> UZ
+  end
+
+  subgraph F["Giao diện Web"]
+    direction TB
+    F1["Gửi file để gợi ý<br/>Transaction ID"]:::action
+    F2["Hiển thị cột ID gợi ý"]:::action
+    F3["POST /csv2graph/run<br/>multipart form"]:::action
+    F4["Refetch dataset info,<br/>preview và suggested prompts"]:::action
+    FE["Hiển thị response lỗi"]:::error
+  end
+
+  subgraph B["Backend NestJS"]
+    direction TB
+    B1["Parse CSV và lấy<br/>unique ID candidates"]:::action
+    B2["Load metadata dataset"]:::action
+    B3{"Đã có metadata và<br/>Transaction nodes?"}:::decision
+    B4{"Vừa train model<br/>vừa demo model?"}:::decision
+    B5{"Chế độ cần nhãn<br/>targetLabel?"}:::decision
+    B6{"CSV có cột target<br/>bắt buộc?"}:::decision
+    B7["Parse rows và headers"]:::action
+    B8["Ensure node_id theo<br/>lựa chọn hoặc LLM"]:::action
+    B9["Preprocess features:<br/>float / target-frequency encoding"]:::action
+    B10["Build star edges<br/>cho data.pt"]:::action
+    B11{"Có targetLabel?"}:::decision
+    B12{"Train mode?"}:::decision
+    B13{"Ingest Neo4j?"}:::decision
+    B14["Tập hợp kết quả job"]:::action
+    BE["Trả lỗi dừng pipeline"]:::error
+    BA["Chuyển sang luồng<br/>Append / Inference"]:::action
+  end
+
+  subgraph A["AI / Python Services"]
+    direction TB
+    A1["LLM gợi ý cột<br/>Transaction ID"]:::ai
+    A2["LLM classify schema:<br/>node_id, relation_cols, features"]:::ai
+    A3["Sidecar tạo data.pt<br/>từ preprocessed.csv và edges.csv"]:::ai
+    A4["Train F-GNN và cập nhật<br/>active model"]:::ai
+    A5["Dùng active demo model<br/>(không train lại)"]:::ai
+  end
+
+  subgraph N["Neo4j"]
+    direction TB
+    N1["Đếm Transaction nodes"]:::data
+    N2["Tạo constraints"]:::data
+    N3["CREATE Transaction nodes"]:::data
+    N4["MERGE AuxiliaryNodes và<br/>Transaction-to-Aux relationships"]:::data
+  end
+
+  subgraph M["MongoDB / Job Files"]
+    direction TB
+    M1["Đọc datasets và<br/>pipeline_configs"]:::data
+    M2["Lưu rawColumns và originalIdCol<br/>vào pipeline_configs"]:::data
+    M3["Ghi nodes.csv, edges.csv,<br/>schema.json"]:::data
+    M4["Ghi preprocessed.csv"]:::data
+    M5["Lưu datasets, pipeline_configs<br/>và encoding_maps"]:::data
+    M6["Cleanup file trung gian;<br/>giữ data.pt và schema.json"]:::data
+    M7["Lưu pipeline_runs mode=full"]:::data
+  end
+
+  U1 --> F1 --> B1 --> A1 --> F2 --> U2
+  U3 --> F3 --> B2 --> M1 --> N1 --> B3
+  B3 -- "Có" --> BA --> F4 --> U4
+  B3 -- "Không, full build" --> B4
+  B4 -- "Có" --> BE --> FE --> UE
+  B4 -- "Không" --> B5
+  B5 -- "Train hoặc demo" --> B6
+  B5 -- "Ingest-only" --> B7
+  B6 -- "Không" --> BE
+  B6 -- "Có" --> B7
+  B7 --> A2 --> B8 --> M2 --> B9 --> B10 --> M3 --> B11
+  B11 -- "Có" --> M4 --> A3 --> B12
+  B11 -- "Không" --> B13
+  B12 -- "Có" --> A4 --> B13
+  B12 -- "Không, demo" --> A5 --> B13
+  B13 -- "Không" --> B14
+  B13 -- "Có" --> N2 --> N3 --> N4 --> M5 --> B14
+  B14 --> M6 --> M7 --> F4 --> U4

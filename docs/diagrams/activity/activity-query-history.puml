@@ -1,0 +1,66 @@
+@startuml activity_query_history
+title Sơ đồ hoạt động - Lịch sử truy vấn theo cài đặt hiện tại
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam activity {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+  FontColor #111111
+}
+skinparam activityDiamond {
+  BorderColor #111111
+  BackgroundColor #FFFFFF
+}
+skinparam swimlane {
+  BorderColor #111111
+  TitleBackgroundColor #FFFFFF
+  TitleFontColor #111111
+}
+
+|Người dùng|
+start
+:Gửi câu hỏi;
+
+|Backend NestJS|
+:Xử lý Text2Cypher\nvà execute Neo4j;
+
+if (Cypher đã execute thành công?) then (Có)
+  :Gọi HistoryService.save()\nfire-and-forget;
+  |MongoDB|
+  :Insert queries document:\nprompt, cypher, result, metadata;
+else (Lỗi khi execute)
+  |Backend NestJS|
+  :Gọi HistoryService.save(error)\nfire-and-forget;
+  |MongoDB|
+  :Insert queries document:\nprompt, cypher, error;
+endif
+
+|MongoDB|
+:Collection queries giữ\nlịch sử server-side;
+
+|Giao diện Web|
+:Nhận response /graph/query;
+
+if (Request thành công?) then (Có)
+  :Lưu prompt, result, metadata\nvào localStorage query-history;
+else (Không)
+  :Lưu prompt và error\nvào localStorage query-history;
+endif
+
+|Người dùng|
+:Mở lịch sử trên giao diện;
+
+|Giao diện Web|
+:ChatHistory đọc entry\ntừ localStorage;
+note right
+  Frontend hiện tại chưa gọi
+  GET /history để đồng bộ MongoDB.
+end note
+
+|Người dùng|
+:Chọn lại một query cũ;
+stop
+
+@enduml

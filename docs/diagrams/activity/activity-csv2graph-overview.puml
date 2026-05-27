@@ -1,5 +1,5 @@
-@startuml activity_csv2graph_overview
-title Activity Diagram - CSV to Graph tổng quát
+@startuml activity_csv2graph_full_build
+title Sơ đồ hoạt động - CSV2Graph Full Build / Train / Demo Model
 
 skinparam backgroundColor #FFFFFF
 skinparam shadowing false
@@ -21,87 +21,129 @@ skinparam swimlane {
 
 |Người dùng|
 start
-:Chọn file CSV;
+:Chọn CSV đầu tiên;
 
-|Hệ thống|
-:Đọc headers CSV;
-:Gọi API gợi ý Transaction ID;
+|Giao diện Web|
+:Gửi file để gợi ý\nTransaction ID;
 
-|Dịch vụ AI/GNN|
-:LLM phân tích headers\nvà sample values;
-:Trả về cột transaction_id gợi ý;
+|Backend NestJS|
+:Parse CSV và lấy\nunique ID candidates;
+
+|AI / Python Services|
+:LLM gợi ý cột\nTransaction ID;
+
+|Giao diện Web|
+:Hiển thị cột ID gợi ý;
 
 |Người dùng|
-:Chọn Transaction ID;
-:Chọn tùy chọn build;
+:Chọn Transaction ID,\nNode Label và chế độ build;
+:Bấm Build Graph;
 
-|Hệ thống|
-if (Train model sau build?) then (Có)
-  :Hiển thị dropdown Target Feature;
+|Giao diện Web|
+:Gửi POST /csv2graph/run\nmultipart form;
+
+|Backend NestJS|
+:Load metadata dataset;
+
+|MongoDB / File Job|
+:Đọc datasets và\npipeline_configs;
+
+|Neo4j|
+:Đếm Transaction nodes;
+
+|Backend NestJS|
+if (Đã có metadata và Transaction nodes?) then (Có)
+  :Chuyển sang luồng\nAppend / Inference;
+  |Giao diện Web|
+  :Cập nhật dataset info\nvà graph preview;
   |Người dùng|
-  :Chọn target feature;
-  |Hệ thống|
-else (Không)
-  if (Dùng model demo có sẵn?) then (Có)
-    :Set target mặc định is_fraud;
-    :Tắt train mode;
-  else (Không)
-    :Không gửi targetLabel;
-    :Chạy ingest-only;
-  endif
+  :Xem thống kê dataset;
+  stop
+else (Không, full build)
 endif
 
-:Gửi request /csv2graph/run;
-:Đọc metadata hiện tại;
-
-|CSDL Neo4j|
-:Đếm node trong database;
-
-|Hệ thống|
-if (Dataset đã có dữ liệu?) then (Có)
-  :Chuyển sang APPEND mode;
-  :Validate CSV theo raw metadata;
+if (Vừa train model vừa demo model?) then (Có)
+  :Trả lỗi dừng pipeline;
+  |Giao diện Web|
+  :Hiển thị response lỗi;
+  |Người dùng|
+  :Xem lỗi build;
+  stop
 else (Không)
-  :Chuyển sang FULL BUILD mode;
-  :Parse CSV;
-
-  |Dịch vụ AI/GNN|
-  :LLM suy luận schema CSV;
-
-  |Hệ thống|
-  :Encode features;
-  :Build star graph;
-  :Xuất nodes.csv,\nedges.csv, schema.json;
-
-  if (Có targetLabel?) then (Có)
-    :Tạo preprocessed.csv;
-
-    |Dịch vụ AI/GNN|
-    :Tạo data.pt;
-
-    |Hệ thống|
-    if (Train mode?) then (Có)
-      |Dịch vụ AI/GNN|
-      :Train F-GNN;
-      :Lưu best_model.pt\nvà active model;
-      |Hệ thống|
-    else (Không)
-      :Kiểm tra fgnn_star.pt\nnếu là demo mode;
-    endif
-  else (Không)
-    :Bỏ qua data.pt;
-  endif
-
-  |CSDL Neo4j|
-  :Import graph vào Neo4j;
-
-  |Hệ thống|
-  :Lưu metadata dataset\nvà schema;
 endif
+
+if (Chế độ cần nhãn targetLabel?) then (Train hoặc demo)
+  if (CSV có cột target bắt buộc?) then (Không)
+    :Trả lỗi dừng pipeline;
+    |Giao diện Web|
+    :Hiển thị response lỗi;
+    |Người dùng|
+    :Xem lỗi build;
+    stop
+  else (Có)
+  endif
+else (Ingest-only)
+endif
+
+|Backend NestJS|
+:Parse rows và headers;
+
+|AI / Python Services|
+:LLM classify schema:\nnode_id, relation_cols, features;
+
+|Backend NestJS|
+:Ensure node_id theo\nlựa chọn hoặc LLM;
+
+|MongoDB / File Job|
+:Lưu rawColumns và originalIdCol\nvào pipeline_configs;
+
+|Backend NestJS|
+:Preprocess features:\nfloat / target-frequency encoding;
+:Build star edges\ncho data.pt;
+
+|MongoDB / File Job|
+:Ghi nodes.csv, edges.csv,\nschema.json;
+
+|Backend NestJS|
+if (Có targetLabel?) then (Có)
+  |MongoDB / File Job|
+  :Ghi preprocessed.csv;
+  |AI / Python Services|
+  :Sidecar tạo data.pt\ntừ preprocessed.csv và edges.csv;
+  |Backend NestJS|
+  if (Train mode?) then (Có)
+    |AI / Python Services|
+    :Train F-GNN và cập nhật\nactive model;
+  else (Không, demo)
+    |AI / Python Services|
+    :Dùng active demo model\n(không train lại);
+  endif
+else (Không)
+endif
+
+|Backend NestJS|
+if (Có ingest vào Neo4j?) then (Có)
+  |Neo4j|
+  :Tạo constraints;
+  :CREATE Transaction nodes;
+  :MERGE AuxiliaryNodes và\nTransaction-to-Aux relationships;
+  |MongoDB / File Job|
+  :Lưu datasets, pipeline_configs\nvà encoding_maps;
+else (Không)
+endif
+
+|Backend NestJS|
+:Tập hợp kết quả job;
+
+|MongoDB / File Job|
+:Cleanup file trung gian;\ngiữ data.pt và schema.json;
+:Lưu pipeline_runs\nmode = full;
+
+|Giao diện Web|
+:Refetch dataset info,\npreview và suggested prompts;
 
 |Người dùng|
-:Nhận thông báo build thành công;
-:Xem graph preview\nvà dataset info;
+:Xem thống kê dataset\nvà graph preview;
 stop
 
 @enduml

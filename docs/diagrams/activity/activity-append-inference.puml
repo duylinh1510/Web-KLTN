@@ -1,5 +1,5 @@
 @startuml activity_append_inference
-title Activity Diagram - Append CSV và inference fraud
+title Sơ đồ hoạt động - Append CSV và F-GNN Inference
 
 skinparam backgroundColor #FFFFFF
 skinparam shadowing false
@@ -21,72 +21,118 @@ skinparam swimlane {
 
 |Người dùng|
 start
-:Upload CSV append;
+:Upload CSV mới vào\ndataset đã có;
+:Bấm Append vào dataset;
 
-|Hệ thống|
-:Load _latest_[database].json;
-:Load _raw_[database].json;
+|Giao diện Web|
+:Gửi POST /csv2graph/run;
 
-|CSDL Neo4j|
-:Đếm node hiện có;
+|Backend NestJS|
+:Tải canonical metadata;
 
-|Hệ thống|
-if (Có metadata và DB có dữ liệu?) then (Không)
-  :Chuyển sang full build;
+|MongoDB / File Job|
+:Đọc datasets,\npipeline_configs,\nencoding_maps;
+
+|Neo4j|
+:Đếm Transaction nodes;
+
+|Backend NestJS|
+if (Metadata và graph hiện tại tồn tại?) then (Không)
+  :Thực hiện luồng Full Build;
   stop
 else (Có)
 endif
 
 :Parse CSV append;
-:Validate headers\ntheo raw columns;
 
-if (CSV có cột is_fraud?) then (Có)
-  if (Tất cả dòng đều có nhãn?) then (Có)
-    :Dùng nhãn có sẵn;
-    :Không chạy inference;
-    :Đánh dấu dữ liệu\nđã có nhãn;
-  else (Không)
-    :Trả lỗi target thiếu một phần;
-    :Dừng xử lý append;
-    |Người dùng|
-    :Hiển thị lỗi upload;
-    stop
-  endif
+if (Nhãn target bị thiếu một phần?) then (Có)
+  :Trả lỗi validation;
+  |Giao diện Web|
+  :Hiển thị lỗi;
+  |Người dùng|
+  :Xem lỗi append;
+  stop
 else (Không)
-  :Chưa có nhãn is_fraud\ntrong file append;
-  :Đánh dấu cần inference;
 endif
 
-if (File append chưa có nhãn?) then (Có)
-  if (Dataset có model usable?) then (Có)
-    :Encode data mới\ntheo schema cũ;
-
-    |Dịch vụ AI/GNN|
-    :Tạo data.pt cho inference;
-    :Load fgnn_star.pt;
-    :Predict fraud scores;
-
-    |Hệ thống|
-    :Gán nhãn is_fraud\ncho từng dòng append;
-  else (Không)
-    :Không inference fraud;
-    :Chỉ ingest dữ liệu mới;
-  endif
+|Backend NestJS|
+if (Nhãn rỗng nhưng không có model?) then (Có)
+  :Trả lỗi validation;
+  |Giao diện Web|
+  :Hiển thị lỗi;
+  |Người dùng|
+  :Xem lỗi append;
+  stop
 else (Không)
-  :Giữ nguyên nhãn is_fraud\nđã có trong CSV;
 endif
 
-:Build edges cho dữ liệu append;
+|Backend NestJS|
+:Validate raw columns;\nbỏ cột thừa;
 
-|CSDL Neo4j|
-:MERGE nodes và relationships;
+if (Thiếu cột bắt buộc?) then (Có)
+  :Trả lỗi validation;
+  |Giao diện Web|
+  :Hiển thị lỗi;
+  |Người dùng|
+  :Xem lỗi append;
+  stop
+else (Không)
+endif
 
-|Hệ thống|
-:Tạo response append;
+|Backend NestJS|
+:Ensure node_id bằng\noriginalIdCol;
+
+|Neo4j|
+:Kiểm tra node_id trùng;
+
+|Backend NestJS|
+if (Node ID bị trùng trong Neo4j?) then (Có)
+  :Trả lỗi validation;
+  |Giao diện Web|
+  :Hiển thị lỗi;
+  |Người dùng|
+  :Xem lỗi append;
+  stop
+else (Không)
+endif
+
+|Backend NestJS|
+:Build star edges theo\nrelation cols đã lưu;
+
+|MongoDB / File Job|
+:Ghi nodes.csv,\nedges.csv, schema.json;
+
+|Backend NestJS|
+if (Cần inference?\nModel usable và chưa đủ nhãn) then (Có)
+  :Encode bằng schema và\nencoding maps cũ;
+  |MongoDB / File Job|
+  :Ghi preprocessed.csv;
+  |Python / GNN Services|
+  :Sidecar tạo data.pt\nmode = inference;
+  :F-GNN dự đoán fraud;
+  |Backend NestJS|
+  :Gán nhãn dự đoán\nvào raw rows;
+else (Không)
+  :Dùng nhãn sẵn có hoặc\ningest không inference;
+endif
+
+|Backend NestJS|
+if (Có ingest vào Neo4j?) then (Có)
+  |Neo4j|
+  :MERGE Transaction nodes;
+  :MERGE AuxiliaryNodes và\nquan hệ heterogeneous;
+else (Không)
+endif
+
+|MongoDB / File Job|
+:Dọn file trung gian;\ngiữ data.pt và schema.json;
+:Lưu pipeline_runs\nmode = append;
+
+|Giao diện Web|
+:Cập nhật dataset info\nvà graph preview;
 
 |Người dùng|
-:Xem kết quả append;
-:Xem số fraud dự đoán\nnếu có inference;
+:Xem dữ liệu mới và số fraud\nnếu có inference;
 stop
 
 @enduml

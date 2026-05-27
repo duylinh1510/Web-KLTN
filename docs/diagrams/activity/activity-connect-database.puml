@@ -1,5 +1,5 @@
 @startuml activity_connect_database
-title Activity Diagram - Kết nối Neo4j Database
+title Sơ đồ hoạt động - Kết nối cơ sở dữ liệu Neo4j
 
 skinparam backgroundColor #FFFFFF
 skinparam shadowing false
@@ -21,59 +21,76 @@ skinparam swimlane {
 
 |Người dùng|
 start
-:Mở form kết nối Neo4j;
-:Nhập URI, username, password,\nDatabase Name;
+:Nhập URI, username, password,\nvà Database Name;
 :Bấm Connect;
 
-|Hệ thống|
-:Tạo Neo4j driver;
+|Giao diện Web|
+:Gửi POST /neo4j/connect;
 
-|CSDL Neo4j|
-:Kiểm tra credential\nbằng getServerInfo;
+|Backend NestJS|
+:Tạo hoặc thay thế\nNeo4j driver;
 
-|Hệ thống|
-if (Kết nối DBMS hợp lệ?) then (Không)
-  :Tạo thông báo lỗi kết nối;
+|Neo4j|
+:Kiểm tra credential\nbằng getServerInfo();
+
+|Backend NestJS|
+if (Credential và DBMS hợp lệ?) then (Không)
+  :Trả response lỗi;
+  |Giao diện Web|
+  :Hiển thị lỗi connect;
   |Người dùng|
-  :Hiển thị modal lỗi kết nối;
+  :Xem thông báo lỗi;
   stop
 else (Có)
 endif
 
-|CSDL Neo4j|
+|Neo4j|
 :Truy vấn SHOW DATABASES;
 
-|Hệ thống|
-if (Database Name tồn tại?) then (Không)
-  :Tạo thông báo lỗi database;
+|Backend NestJS|
+if (Database được chọn tồn tại?) then (Không)
+  :Trả response lỗi;
+  |Giao diện Web|
+  :Hiển thị lỗi connect;
   |Người dùng|
-  :Hiển thị modal lỗi\nDatabase Name không hợp lệ;
+  :Xem thông báo lỗi;
   stop
 else (Có)
+  :Đặt currentDatabase;
 endif
 
-|CSDL Neo4j|
+|Neo4j|
 :Đếm số node trong database;
 
-|Hệ thống|
-if (Database có dữ liệu?) then (Có)
-  :Kiểm tra file\nschema_[database].txt;
-  if (Có schema cache?) then (Không)
-    :Tạo thông báo lỗi\nthiếu schema cache;
+|Backend NestJS|
+if (Database có node hiện hữu?) then (Có)
+  |MongoDB|
+  :Đọc datasets.graphSchema\ntheo database;
+  |Backend NestJS|
+  if (Đã có graph schema cache?) then (Không)
+    :Trả response lỗi\nthiếu graph schema cache;
+    |Giao diện Web|
+    :Hiển thị lỗi connect;
     |Người dùng|
-    :Hiển thị modal lỗi\nthiếu schema cache;
+    :Xem thông báo lỗi;
     stop
   else (Có)
   endif
-else (Không)
-  :Đánh dấu database rỗng;
+else (Không, DB rỗng)
 endif
 
-|Hệ thống|
-:Lưu trạng thái connected;
+|MongoDB|
+:Upsert connections\n(uri, database, lastUsedAt);
+
+|Backend NestJS|
+:Trả response success;
+
+|Giao diện Web|
+:Lưu trạng thái connection\ntrong frontend store;
 
 |Người dùng|
-:Có thể upload CSV\nhoặc truy vấn dữ liệu;
+:Nhận thông báo kết nối thành công;
+:Có thể build graph\nhoặc đặt câu hỏi;
 stop
 
 @enduml
