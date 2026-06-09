@@ -1,79 +1,146 @@
 @startuml sequence_text2cypher
-title Sequence Diagram - Luồng hỏi Text2Cypher
+title Sơ đồ tuần tự - Luồng truy vấn Text2Cypher
 
 autonumber
+hide footbox
 skinparam backgroundColor #FFFFFF
 skinparam shadowing false
-skinparam sequenceMessageAlign center
 skinparam defaultFontName Arial
+skinparam dpi 160
+skinparam sequenceMessageAlign center
 skinparam ParticipantBorderColor #334155
 skinparam ParticipantBackgroundColor #F8FAFC
 skinparam DatabaseBorderColor #0F766E
 skinparam DatabaseBackgroundColor #ECFDF5
 
 actor "Người dùng" as User
-boundary "Frontend\nChatBox" as FE
-control "Backend\nGraphController" as GraphController
-control "Text2CypherService" as Text2Cypher
-control "SchemaService" as SchemaService
-control "Neo4jService" as Neo4jService
-actor "Text2Cypher LLM\n/ Colab API" as Llm
+boundary "Giao diện Web" as UI
+control "Bộ điều phối Text2Cypher\n(Backend NestJS)" as Control
+database "MongoDB" as Mongo
+participant "Text2Cypher LLM" as LLM
 database "Neo4j" as Neo4j
-collections "Schema Cache\nschema_[database].txt" as SchemaCache
 
-User -> FE: Nhập câu hỏi tự nhiên
-FE -> GraphController: POST /graph/query\n{ prompt }
-GraphController -> Text2Cypher: generateCypher(prompt)
+User -> UI: Nhập và gửi câu hỏi tự nhiên
+UI -> Control: POST /graph/query\n{ prompt }
+activate Control
 
-Text2Cypher -> Neo4j: MATCH (n) RETURN count(n)
-Neo4j --> Text2Cypher: totalNodes
+Control -> Neo4j: Đếm số node hiện có
+activate Neo4j
+Neo4j --> Control: Số lượng node
+deactivate Neo4j
 
-alt Database rỗng
-  Text2Cypher --> GraphController: Throw BadRequest
-  GraphController --> FE: 400 error
-  FE --> User: Hiển thị lỗi
+alt Database chưa có dữ liệu graph
+  Control --> UI: Trả lỗi chưa có dữ liệu graph
+  UI --> User: Hiển thị thông báo lỗi
 else Database có dữ liệu
-  Text2Cypher -> SchemaService: getFullSchema()
-  SchemaService -> SchemaCache: Đọc schema_[database].txt
+  Control -> Mongo: Đọc schema cache của dataset
+  activate Mongo
+  Mongo --> Control: Schema cache hoặc rỗng
+  deactivate Mongo
 
-  alt Cache miss
-    SchemaService -> Neo4jService: getReadSession()
-    Neo4jService -> Neo4j: CALL db.schema.*\nlay sample values
-    Neo4j --> SchemaService: schema string
-    SchemaService -> SchemaCache: Lưu schema cache
-  else Cache hit
-    SchemaCache --> SchemaService: schema string
+  alt Chưa có schema cache
+    Control -> Neo4j: Trích xuất schema graph\nvà giá trị mẫu
+    activate Neo4j
+    Neo4j --> Control: Full schema
+    deactivate Neo4j
+    Control ->> Mongo: Lưu schema cache
+  else Đã có schema cache
+    Control -> Control: Sử dụng full schema từ cache
   end
 
-  SchemaService --> Text2Cypher: full schema
-  Text2Cypher -> Llm: /generate lần 1\nquestion + full schema
-  Llm --> Text2Cypher: cypherV1
-  Text2Cypher -> SchemaService: filterSchemaByQuery(cypherV1)
-  SchemaService --> Text2Cypher: linked schema
-  Text2Cypher -> Llm: /generate lần 2\nquestion + linked schema
-  Llm --> Text2Cypher: cypherV2
+  group Schema Linking
+    Control -> LLM: Sinh Cypher lần 1\n(câu hỏi + full schema)
+    activate LLM
+    LLM --> Control: Cypher V1
+    deactivate LLM
 
-  loop Tối đa 3 lần self-correct
-    Text2Cypher -> Neo4jService: EXPLAIN cypher
-    Neo4jService -> Neo4j: EXPLAIN
-    alt Cypher hợp lệ
-      Neo4j --> Neo4jService: OK
-      Neo4jService --> Text2Cypher: success
-    else Cypher lỗi
-      Neo4j --> Neo4jService: error
-      Neo4jService --> Text2Cypher: error log
-      Text2Cypher -> Llm: /correct\nquestion + schema + error
-      Llm --> Text2Cypher: corrected cypher
+    alt Không sinh được Cypher V1
+      Control --> UI: Trả lỗi AI không thể sinh truy vấn
+      UI --> User: Hiển thị thông báo lỗi
+    else Sinh được Cypher V1
+      Control -> Control: Xác định schema sử dụng theo Cypher V1\n(giữ full schema nếu schema nhỏ)
+      Control -> LLM: Sinh Cypher lần 2\n(câu hỏi + linked schema)
+      activate LLM
+      LLM --> Control: Cypher V2
+      deactivate LLM
+
+      alt Không sinh được Cypher V2
+        Control --> UI: Trả lỗi AI không thể sinh truy vấn
+        UI --> User: Hiển thị thông báo lỗi
+      else Sinh được Cypher V2
+        group Kiểm tra an toàn và tự sửa lỗi
+          Control -> Control: Khởi tạo số lần tự sửa = 0\nKiểm tra Read-only Guard
+
+          alt Cypher không an toàn
+            Control --> UI: Từ chối truy vấn không an toàn
+            UI --> User: Hiển thị thông báo lỗi
+          else Cypher an toàn
+            Control -> Neo4j: EXPLAIN Cypher
+            activate Neo4j
+            Neo4j --> Control: Kết quả EXPLAIN
+            deactivate Neo4j
+
+            loop EXPLAIN lỗi và số lần tự sửa < 3
+              Control -> LLM: Sửa Cypher theo lỗi Neo4j
+              activate LLM
+              LLM --> Control: Cypher đã sửa hoặc error
+              deactivate LLM
+
+              alt LLM không trả về Cypher mới
+                break Dừng xử lý do không thể sửa truy vấn
+                  Control --> UI: Trả lỗi không thể sửa truy vấn
+                  UI --> User: Hiển thị thông báo lỗi
+                end
+              else Có Cypher mới
+                Control -> Control: Cập nhật số lượt tự sửa\nKiểm tra Read-only Guard
+
+                alt Cypher đã sửa không an toàn
+                  break Dừng xử lý do truy vấn không an toàn
+                    Control --> UI: Từ chối truy vấn không an toàn
+                    UI --> User: Hiển thị thông báo lỗi
+                  end
+                else Cypher đã sửa an toàn
+                  Control -> Neo4j: EXPLAIN Cypher đã sửa
+                  activate Neo4j
+                  Neo4j --> Control: Kết quả EXPLAIN
+                  deactivate Neo4j
+                end
+              end
+            end
+
+            note over Control,Neo4j
+              Tối đa 3 lần tự sửa.
+              Cypher sau lần sửa thứ ba vẫn được EXPLAIN
+              trước khi hệ thống kết luận thất bại.
+            end note
+
+            alt EXPLAIN vẫn lỗi sau khi hết lượt tự sửa
+              Control --> UI: Không thể tạo Cypher hợp lệ
+              UI --> User: Hiển thị thông báo lỗi
+            else Cypher hợp lệ
+              Control -> Control: Kiểm tra Read-only Guard lần cuối
+              Control -> Neo4j: Thực thi Cypher ở chế độ đọc
+              activate Neo4j
+              Neo4j --> Control: Records hoặc lỗi thực thi
+              deactivate Neo4j
+
+              alt Thực thi Cypher lỗi
+                Control ->> Mongo: Lưu lịch sử lỗi thực thi\n(không chặn phản hồi)
+                Control --> UI: Trả lỗi thực thi Cypher
+                UI --> User: Hiển thị thông báo lỗi
+              else Thực thi thành công
+                Control -> Control: Định dạng bảng dữ liệu\nvà graph data
+                Control ->> Mongo: Lưu lịch sử truy vấn\n(không chặn phản hồi)
+                Control --> UI: Trả Cypher và kết quả
+                UI --> User: Hiển thị bảng kết quả\nhoặc trực quan hóa đồ thị
+              end
+            end
+          end
+        end
+      end
     end
   end
-
-  Text2Cypher --> GraphController: finalCypher
-  GraphController -> Neo4jService: getReadSession()
-  Neo4jService -> Neo4j: RUN finalCypher
-  Neo4j --> GraphController: records
-  GraphController -> GraphController: formatRecords()
-  GraphController --> FE: graphData + scalars + cypher
-  FE --> User: Hiển thị graph và bảng kết quả
 end
 
+deactivate Control
 @enduml

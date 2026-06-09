@@ -147,7 +147,9 @@ export class Text2CypherService {
 
     console.log('[Text2Cypher] --- SELF-CORRECTION LOOP ---');
 
-    while (retry < this.maxRetries) {
+    // Validate the initial query plus every corrected version. A maxRetries
+    // value of 3 means at most three /correct calls, not three EXPLAIN calls.
+    while (retry <= this.maxRetries) {
       const guardResult = this.readOnlyGuard.validate(currentCypher);
       if (!guardResult.safe) {
         const guardError = `Read-only guard rejected query: ${guardResult.reason}`;
@@ -163,7 +165,7 @@ export class Text2CypherService {
 
       // Execute EXPLAIN
       console.log(
-        `[Text2Cypher] EXPLAIN attempt ${retry + 1}/${this.maxRetries}...`,
+        `[Text2Cypher] EXPLAIN attempt ${retry + 1}/${this.maxRetries + 1}...`,
       );
       const { success, error } =
         await this.neo4jService.executeCypherExplain(currentCypher);
@@ -182,6 +184,10 @@ export class Text2CypherService {
       const errorMsg = `Retry ${retry}: ${error}`;
       errors.push(errorMsg);
       console.log(`[Text2Cypher] EXPLAIN failed: ${error}`);
+
+      if (retry === this.maxRetries) {
+        break;
+      }
 
       // Gọi /correct để sửa
       console.log('[Text2Cypher] Calling /correct...');

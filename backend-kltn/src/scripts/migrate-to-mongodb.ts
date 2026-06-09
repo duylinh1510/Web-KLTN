@@ -28,7 +28,7 @@ async function migrate() {
   await client.connect();
   console.log('✅ Connected to MongoDB');
 
-  const db = client.db('fraud_detection');
+  const db = client.db();
   const database = 'neo4j';
 
   // ── 1. Migrate _latest_neo4j.json ──
@@ -75,13 +75,22 @@ async function migrate() {
       );
       console.log('  ✅ pipeline_configs: upserted');
 
-      if (schema.encoding_maps && Object.keys(schema.encoding_maps).length > 0) {
-        await db.collection('encoding_maps').updateOne(
-          { database },
-          { $set: { database, maps: schema.encoding_maps } },
-          { upsert: true },
-        );
-        const size = (JSON.stringify(schema.encoding_maps).length / 1024 / 1024).toFixed(1);
+      if (
+        schema.encoding_maps &&
+        Object.keys(schema.encoding_maps).length > 0
+      ) {
+        await db
+          .collection('encoding_maps')
+          .updateOne(
+            { database },
+            { $set: { database, maps: schema.encoding_maps } },
+            { upsert: true },
+          );
+        const size = (
+          JSON.stringify(schema.encoding_maps).length /
+          1024 /
+          1024
+        ).toFixed(1);
         console.log(`  ✅ encoding_maps: upserted (${size}MB)`);
       }
     }
@@ -94,11 +103,18 @@ async function migrate() {
   if (fs.existsSync(rawPath)) {
     console.log('\n📦 Migrating _raw_neo4j.json...');
     const raw = JSON.parse(fs.readFileSync(rawPath, 'utf-8'));
-    await db.collection('pipeline_configs').updateOne(
-      { database },
-      { $set: { originalIdCol: raw.originalIdCol, rawColumns: raw.rawColumns } },
-      { upsert: true },
-    );
+    await db
+      .collection('pipeline_configs')
+      .updateOne(
+        { database },
+        {
+          $set: {
+            originalIdCol: raw.originalIdCol,
+            rawColumns: raw.rawColumns,
+          },
+        },
+        { upsert: true },
+      );
     console.log('  ✅ pipeline_configs: rawColumns updated');
   }
 
@@ -107,11 +123,13 @@ async function migrate() {
   if (fs.existsSync(schemaPath)) {
     console.log('\n📦 Migrating schema_neo4j.txt...');
     const schemaText = fs.readFileSync(schemaPath, 'utf-8');
-    await db.collection('datasets').updateOne(
-      { database },
-      { $set: { graphSchema: schemaText } },
-      { upsert: true },
-    );
+    await db
+      .collection('datasets')
+      .updateOne(
+        { database },
+        { $set: { graphSchema: schemaText } },
+        { upsert: true },
+      );
     console.log('  ✅ datasets.graphSchema: updated');
   }
 

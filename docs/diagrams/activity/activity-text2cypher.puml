@@ -1,151 +1,204 @@
 @startuml activity_text2cypher
-title Sơ đồ hoạt động - Text2Cypher, schema linking, tự sửa lỗi và thực thi
+title Sơ đồ hoạt động - Luồng truy vấn Text2Cypher
 
 skinparam backgroundColor #FFFFFF
 skinparam shadowing false
 skinparam defaultFontName Arial
+skinparam dpi 160
 skinparam activity {
-  BorderColor #111111
+  BorderColor #334155
   BackgroundColor #FFFFFF
-  FontColor #111111
+  FontColor #0F172A
 }
 skinparam activityDiamond {
-  BorderColor #111111
-  BackgroundColor #FFFFFF
+  BorderColor #C2410C
+  BackgroundColor #FFF7ED
+  FontColor #0F172A
 }
 skinparam swimlane {
-  BorderColor #111111
-  TitleBackgroundColor #FFFFFF
-  TitleFontColor #111111
+  BorderColor #64748B
+  TitleBackgroundColor #E2E8F0
+  TitleFontColor #0F172A
 }
 
 |Người dùng|
 start
-:Nhập câu hỏi tự nhiên;
-:Bấm Send;
+:Nhập câu hỏi bằng
+ngôn ngữ tự nhiên;
+:Gửi câu hỏi;
 
-|Giao diện Web|
-:Gửi POST /graph/query;
-
-|Backend NestJS|
-:Đếm tất cả node;
+|Hệ thống|
+:Kiểm tra database
+đã có dữ liệu;
 
 |Neo4j|
-:MATCH count nodes;
+:Đếm số node hiện có;
 
-|Backend NestJS|
-if (Database rỗng?) then (Có)
-  :Trả response lỗi;
-  |Giao diện Web|
-  :Render lỗi và lưu entry lỗi\nvào localStorage history;
+|Hệ thống|
+if (Database có dữ liệu?) then (Không)
+  :Hiển thị thông báo lỗi;
   |Người dùng|
-  :Xem thông báo lỗi;
+  :Nhận thông báo
+  chưa có dữ liệu graph;
   stop
-else (Không)
+else (Có)
 endif
-
-|Backend NestJS|
-:Lấy full schema;
 
 |MongoDB|
-:Đọc datasets.graphSchema;
+:Đọc schema cache
+của dataset;
 
-|Backend NestJS|
-if (Có schema cache trong dataset?) then (Không)
+|Hệ thống|
+if (Schema cache tồn tại?) then (Không)
   |Neo4j|
-  :Đọc schema và sample values;
+  :Trích xuất schema graph
+  và giá trị mẫu;
   |MongoDB|
-  :Lưu datasets.graphSchema;
+  :Lưu schema cache;
 else (Có)
 endif
+
+' ── Schema Linking ──
+|Text2Cypher LLM|
+:Sinh Cypher lần 1
+(full schema);
+
+|Hệ thống|
+if (Sinh được Cypher V1?) then (Không)
+  :Hiển thị lỗi AI không thể
+  sinh truy vấn;
+  |Người dùng|
+  :Nhận thông báo lỗi;
+  stop
+else (Có)
+endif
+
+|Hệ thống|
+:Schema Linking: xác định schema
+đưa vào lần sinh thứ hai;
+note right
+  Dựa vào Cypher V1 để xác định
+  node labels và relationships liên quan.
+  Với schema nhỏ, hệ thống giữ
+  nguyên full schema.
+end note
 
 |Text2Cypher LLM|
-:Generate Cypher V1\nvới full schema;
+:Sinh Cypher lần 2
+(linked schema);
 
-|Backend NestJS|
-:Schema linking:\nlọc schema theo Cypher V1\n(schema nhỏ giữ nguyên);
-
-|Text2Cypher LLM|
-:Generate Cypher V2\nvới linked schema;
-
-|Backend NestJS|
-if (Cypher V2 sinh thành công?) then (Không)
-  :Trả response lỗi;
-  |Giao diện Web|
-  :Render lỗi;
+' ── Self-Correction Loop ──
+|Hệ thống|
+if (Sinh được Cypher V2?) then (Không)
+  :Hiển thị lỗi AI không thể
+  sinh truy vấn;
   |Người dùng|
-  :Xem thông báo lỗi;
+  :Nhận thông báo lỗi;
   stop
 else (Có)
 endif
 
-|Backend NestJS|
-:Read-only guard;
+|Hệ thống|
+:Khởi tạo số lần tự sửa = 0;
+:Kiểm tra truy vấn chỉ đọc
+(Read-only Guard);
 
-if (Query read-only hợp lệ?) then (Không)
-  :Trả response lỗi;
-  |Giao diện Web|
-  :Render lỗi;
+if (Cypher an toàn?) then (Không)
+  :Từ chối truy vấn
+  không an toàn;
   |Người dùng|
-  :Xem thông báo lỗi;
+  :Nhận thông báo lỗi;
   stop
 else (Có)
 endif
-
-repeat
-  |Backend NestJS|
-  :Gửi EXPLAIN;
-  |Neo4j|
-  :EXPLAIN Cypher;
-  |Backend NestJS|
-  if (EXPLAIN pass?) then (Không)
-    |Text2Cypher LLM|
-    :Correct Cypher\nvới error log và full schema;
-    |Backend NestJS|
-    :Read-only guard;
-  else (Có)
-  endif
-repeat while (EXPLAIN lỗi và\nchưa đủ 3 lần?) is (Có)
-
-|Backend NestJS|
-if (EXPLAIN pass?) then (Không)
-  :Trả response lỗi;
-  |Giao diện Web|
-  :Render lỗi;
-  |Người dùng|
-  :Xem thông báo lỗi;
-  stop
-else (Có)
-endif
-
-|Backend NestJS|
-:Read-only guard lần cuối\ntrước khi execute;
 
 |Neo4j|
-:Thực thi Cypher\nbằng read session;
+:EXPLAIN Cypher;
 
-|Backend NestJS|
-if (Execution thành công?) then (Không)
-  |MongoDB|
-  :Fire-and-forget:\nlưu lỗi execution vào queries;
-  |Backend NestJS|
-  :Trả response lỗi;
-  |Giao diện Web|
-  :Render lỗi;
+|Hệ thống|
+while (EXPLAIN lỗi và\nsố lần tự sửa < 3?) is (Có)
+  |Text2Cypher LLM|
+  :Sửa Cypher theo
+  thông báo lỗi Neo4j;
+
+  |Hệ thống|
+  if (LLM trả về Cypher mới?) then (Không)
+    :Hiển thị lỗi
+    không thể sửa truy vấn;
+    |Người dùng|
+    :Nhận thông báo lỗi;
+    stop
+  else (Có)
+    |Hệ thống|
+    :Cập nhật số lượt tự sửa;
+    :Kiểm tra Read-only Guard
+    cho Cypher đã sửa;
+  endif
+
+  if (Cypher đã sửa an toàn?) then (Không)
+    :Từ chối truy vấn
+    không an toàn;
+    |Người dùng|
+    :Nhận thông báo lỗi;
+    stop
+  else (Có)
+  endif
+
+  |Neo4j|
+  :EXPLAIN Cypher đã sửa;
+
+  |Hệ thống|
+endwhile (Không)
+
+:Đánh giá kết quả EXPLAIN;
+note right
+  Tối đa 3 lần tự sửa.
+  Cypher sau lần sửa thứ ba
+  vẫn được EXPLAIN trước khi
+  kết luận thất bại.
+end note
+
+if (EXPLAIN hợp lệ?) then (Không)
+  :Hiển thị lỗi không thể tạo
+  Cypher hợp lệ sau khi tự sửa;
   |Người dùng|
-  :Xem thông báo lỗi;
+  :Nhận thông báo lỗi;
   stop
 else (Có)
-  :Format records thành\ngraphData và scalars;
+endif
+
+|Hệ thống|
+:Kiểm tra Read-only Guard
+lần cuối trước khi thực thi;
+
+|Neo4j|
+:Thực thi Cypher
+ở chế độ đọc;
+
+|Hệ thống|
+if (Thực thi thành công?) then (Không)
   |MongoDB|
-  :Fire-and-forget:\nlưu query success vào queries;
-  |Backend NestJS|
-  :Trả response success;
-  |Giao diện Web|
-  :Lưu entry thành công\nvào localStorage history;
-  :Render result;
+  :Lưu lịch sử lỗi thực thi
+  (không chặn phản hồi);
+  |Hệ thống|
+  :Hiển thị lỗi thực thi Cypher;
   |Người dùng|
-  :Xem Cypher, bảng kết quả\nhoặc graph visualization;
+  :Nhận thông báo lỗi;
+  stop
+else (Có)
+  :Định dạng kết quả thành
+  bảng dữ liệu và graph data;
+
+  |MongoDB|
+  :Lưu lịch sử truy vấn
+  (không chặn phản hồi);
+
+  |Hệ thống|
+  :Hiển thị Cypher và kết quả;
+
+  |Người dùng|
+  :Xem bảng kết quả
+  hoặc trực quan hóa đồ thị;
   stop
 endif
 
