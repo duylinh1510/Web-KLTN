@@ -26,7 +26,7 @@ async function migrate() {
     tlsAllowInvalidCertificates: true,
   });
   await client.connect();
-  console.log('✅ Connected to MongoDB');
+  console.log('Connected to MongoDB');
 
   const db = client.db();
   const database = 'neo4j';
@@ -34,7 +34,7 @@ async function migrate() {
   // ── 1. Migrate _latest_neo4j.json ──
   const latestPath = path.join(CSV2GRAPH_DIR, `_latest_${database}.json`);
   if (fs.existsSync(latestPath)) {
-    console.log('\n📦 Migrating _latest_neo4j.json...');
+    console.log('\nMigrating _latest_neo4j.json...');
     const meta = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
 
     await db.collection('datasets').updateOne(
@@ -53,7 +53,7 @@ async function migrate() {
       },
       { upsert: true },
     );
-    console.log('  ✅ datasets: upserted');
+    console.log('  datasets: upserted');
 
     const schema = meta.schema;
     if (schema) {
@@ -91,11 +91,11 @@ async function migrate() {
           1024 /
           1024
         ).toFixed(1);
-        console.log(`  ✅ encoding_maps: upserted (${size}MB)`);
+        console.log(`   encoding_maps: upserted (${size}MB)`);
       }
     }
   } else {
-    console.log('⚠️  _latest_neo4j.json not found, skipping');
+    console.log('  _latest_neo4j.json not found, skipping');
   }
 
   // ── 2. Migrate _raw_neo4j.json ──
@@ -103,25 +103,23 @@ async function migrate() {
   if (fs.existsSync(rawPath)) {
     console.log('\n📦 Migrating _raw_neo4j.json...');
     const raw = JSON.parse(fs.readFileSync(rawPath, 'utf-8'));
-    await db
-      .collection('pipeline_configs')
-      .updateOne(
-        { database },
-        {
-          $set: {
-            originalIdCol: raw.originalIdCol,
-            rawColumns: raw.rawColumns,
-          },
+    await db.collection('pipeline_configs').updateOne(
+      { database },
+      {
+        $set: {
+          originalIdCol: raw.originalIdCol,
+          rawColumns: raw.rawColumns,
         },
-        { upsert: true },
-      );
-    console.log('  ✅ pipeline_configs: rawColumns updated');
+      },
+      { upsert: true },
+    );
+    console.log('   pipeline_configs: rawColumns updated');
   }
 
   // ── 3. Migrate schema_neo4j.txt ──
   const schemaPath = path.join(SCHEMAS_DIR, `schema_${database}.txt`);
   if (fs.existsSync(schemaPath)) {
-    console.log('\n📦 Migrating schema_neo4j.txt...');
+    console.log('\n Migrating schema_neo4j.txt...');
     const schemaText = fs.readFileSync(schemaPath, 'utf-8');
     await db
       .collection('datasets')
@@ -130,14 +128,14 @@ async function migrate() {
         { $set: { graphSchema: schemaText } },
         { upsert: true },
       );
-    console.log('  ✅ datasets.graphSchema: updated');
+    console.log('   datasets.graphSchema: updated');
   }
 
-  console.log('\n🎉 Migration complete!');
+  console.log('\n Migration complete!');
   await client.close();
 }
 
 migrate().catch((err) => {
-  console.error('❌ Migration failed:', err);
+  console.error(' Migration failed:', err);
   process.exit(1);
 });
