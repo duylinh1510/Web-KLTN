@@ -10,6 +10,7 @@ import { useGraphPreview } from "./hooks/useGraphPreview";
 import { ChatBox } from "./components/chat/ChatBox";
 import { ChatHistory } from "./components/chat/ChatHistory";
 import { CypherBlock } from "./components/graph/CypherBlock";
+import { FraudStatsBar } from "./components/graph/FraudStatsBar";
 import { GraphView } from "./components/graph/GraphView";
 import { ScalarsPanel } from "./components/graph/ScalarsPanel";
 
@@ -55,6 +56,7 @@ function RightPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 text-sm">
       <CypherBlock />
+      <FraudStatsBar />
       <GraphView />
       <ScalarsPanel />
     </div>
