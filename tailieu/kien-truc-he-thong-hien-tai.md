@@ -29,7 +29,7 @@ NestJS Backend (:3000)
   |     - lưu lịch sử truy vấn
   |
   |-- Python CSV2Graph Sidecar (:8002)
-  |     - build data.pt
+  |     - build data.pt khi cần train/inference
   |     - train F-GNN
   |
   |-- Python GNN Inference Service (:8001)
@@ -58,7 +58,7 @@ Frontend là ứng dụng React chạy bằng Vite. Giao diện chính là layou
 ```text
 Cột trái   : Kết nối Neo4j + upload CSV
 Cột giữa  : Chat + lịch sử câu hỏi
-Cột phải  : Generated Cypher + graph visualization + bảng scalar
+Cột phải  : Generated Cypher + fraud stats + graph visualization + bảng scalar
 ```
 
 Các thư viện chính:
@@ -84,7 +84,7 @@ Các nhóm file quan trọng:
 | Kết nối Neo4j | `src/components/connect/*` | Form connect, trạng thái kết nối |
 | CSV upload | `src/components/csv/*` | Drop file, preview, build/append options |
 | Chat | `src/components/chat/*` | ChatBox, lịch sử, prompt gợi ý |
-| Graph output | `src/components/graph/*` | CypherBlock, GraphView, ScalarsPanel |
+| Graph output | `src/components/graph/*` | CypherBlock, FraudStatsBar, GraphView, ScalarsPanel |
 | Stores | `src/store/*` | Zustand stores |
 | Hooks | `src/hooks/*` | React Query hooks cho API |
 
@@ -156,12 +156,12 @@ Các collection hiện tại:
 |---|---|---|
 | `connections` | `connection.schema.ts` | Lưu URI/database đã kết nối, thời điểm connect |
 | `datasets` | `dataset.schema.ts` | Lưu trạng thái dataset, nodeLabel, targetLabel, columns, graphSchema, model info |
-| `pipeline_configs` | `pipeline-config.schema.ts` | Lưu relationCols, featureCols, rawColumns, originalIdCol, split config |
+| `pipeline_configs` | `pipeline-config.schema.ts` | Lưu relationCols, featureCols, encodedFeatureCols, rawColumns, originalIdCol, split config |
 | `encoding_maps` | `encoding-map.schema.ts` | Lưu target/frequency encoding maps, tách riêng vì có thể lớn |
 | `pipeline_runs` | `pipeline-run.schema.ts` | Lưu lịch sử full build/append, stats, training/inference result |
 | `queries` | `query.schema.ts` | Lưu câu hỏi, Cypher, graphData, scalars, metadata, lỗi |
 
-Trước đây hệ thống có ý tưởng lưu `_latest_<database>.json`, `_raw_<database>.json`, `schema_<database>.txt`. Hiện tại code đã chuyển phần metadata chính sang MongoDB. Các file trong jobDir vẫn được tạo tạm để build `data.pt`, nhưng metadata dataset lâu dài nằm ở MongoDB.
+Trước đây hệ thống có ý tưởng lưu `_latest_<database>.json`, `_raw_<database>.json`, `schema_<database>.txt`. Hiện tại code đã chuyển phần metadata chính sang MongoDB. Các file trong jobDir vẫn được tạo tạm để ingest Neo4j và build `data.pt` khi cần, nhưng metadata dataset lâu dài nằm ở MongoDB.
 
 ### 2.5. Python services
 
@@ -253,7 +253,7 @@ CSV2GRAPH_TIMEOUT_MS=300000
 File:
 
 ```text
-python-services/colab/ngrok_t2c_colab.py
+Text2Cypher/ngrok_t2c_colab.py
 ```
 
 Vai trò:
@@ -261,7 +261,7 @@ Vai trò:
 - `/generate`: sinh Cypher từ câu hỏi và schema.
 - `/correct`: sửa Cypher dựa trên error log từ Neo4j `EXPLAIN`.
 
-Backend gọi service này qua `Text2CypherService`.
+Backend gọi service này qua `Text2CypherService`. Trong runtime hiện tại, Colab chỉ là LLM API cho generate/correct. Schema linking, read-only guard và self-correction loop do backend NestJS điều phối.
 
 Biến môi trường backend liên quan:
 
@@ -492,6 +492,8 @@ fullBuild()
   |-- cleanup file trung gian
 ```
 
+`targetLabel` chỉ có trong hai trường hợp chính: user bật `trainMode` và chọn target feature, hoặc user bật `pretrainedMode` nên backend dùng mặc định `is_fraud`. Nếu ingest-only và không có target label, backend không build `data.pt`; hệ thống chỉ ingest graph dị thể vào Neo4j và lưu metadata.
+
 ### 6.1. Phân loại schema CSV
 
 Backend gọi Colab CSV2Graph LLM qua `SchemaLlmService`.
@@ -572,8 +574,8 @@ Các file có thể có:
 | `nodes.csv` | Luôn có lúc xử lý | Debug/import node |
 | `edges.csv` | Luôn có lúc xử lý | Star edges cho GNN |
 | `schema.json` | Luôn có | Schema canonical cho sidecar |
-| `preprocessed.csv` | Khi cần build `data.pt` | Feature đã encode |
-| `data.pt` | Khi train/demo/inference | PyG graph tensor |
+| `preprocessed.csv` | Khi có `targetLabel` hoặc cần inference append | Feature đã encode |
+| `data.pt` | Khi train, pretrained/demo hoặc inference append | PyG graph tensor |
 | `best_model.pt` | Khi train thành công | Model tốt nhất của job |
 
 Sau khi ingest xong, `CsvOutputService.cleanupJobDir()` xóa CSV trung gian, mặc định giữ lại:
@@ -582,6 +584,8 @@ Sau khi ingest xong, `CsvOutputService.cleanupJobDir()` xóa CSV trung gian, m�
 data.pt
 schema.json
 ```
+
+Nếu job không tạo `data.pt`, sau cleanup thực tế chỉ còn `schema.json`.
 
 ### 6.5. Ingest Neo4j
 
@@ -678,9 +682,9 @@ Trong mode này:
 
 - Không train lại.
 - Target label mặc định là `is_fraud`.
-- Backend vẫn build `data.pt` để giữ tương thích schema/model.
+- Backend build `data.pt` để kiểm tra/giữ tương thích schema với model demo.
 - Metadata lưu `hasModel=true`.
-- Các lần append sau đó có thể chạy inference nếu file mới không có nhãn.
+- Các lần append sau đó mới chạy inference nếu file mới không có nhãn.
 
 ## 9. Luồng append CSV và inference fraud
 
@@ -713,13 +717,14 @@ appendBuild()
   |-- parse CSV
   |-- load rawInfo từ MongoDB
   |-- validate headers theo rawColumns
+  |-- thiếu cột gốc thì báo lỗi, cột dư thì silent drop
   |-- ensure node_id theo originalIdCol
   |-- check duplicate node_id trong Neo4j
   |-- build star edges theo relation_cols cũ
   |-- nếu cần inference: encode bằng encoding_maps cũ
-  |-- build inference data.pt
-  |-- gọi GNN /predict-data-pt
-  |-- gán predicted label vào targetLabel
+  |-- nếu cần inference: build inference data.pt
+  |-- nếu cần inference: gọi GNN /predict-data-pt
+  |-- nếu cần inference: gán predicted label vào targetLabel
   |-- ingest Neo4j bằng MERGE
   |-- lưu pipeline run
 ```
@@ -734,6 +739,8 @@ Các trường hợp:
 | Có target label nhưng thiếu một phần | Có hoặc không | Báo lỗi |
 | Không có target label | Có model | Build `data.pt`, chạy inference, gán nhãn |
 | Không có target label | Không có model | Chỉ ingest nếu schema cho phép, không inference |
+
+Append không gọi LLM classify schema lại. File append phải có đủ các cột gốc đã lưu trong `rawColumns`, trừ target label được phép thiếu khi dataset có model để inference. Nếu file append có cột mới ngoài schema cũ, backend bỏ qua cột đó để giữ feature dimension và Neo4j schema ổn định.
 
 ### 9.2. Duplicate node_id
 
@@ -774,7 +781,7 @@ Text2CypherService.generateCypher()
   |-- kiểm tra database có node không
   |-- lấy full schema từ MongoDB cache hoặc Neo4j
   |-- gọi LLM /generate lần 1 với full schema
-  |-- schema linking: filter schema theo Cypher V1 nếu schema lớn
+  |-- schema linking: filter schema theo label trong Cypher V1 nếu schema đủ lớn
   |-- gọi LLM /generate lần 2 với linked schema
   |-- self-correction loop:
   |     - Read-only Guard
@@ -816,11 +823,18 @@ Nếu cache miss:
 Text2Cypher gọi LLM hai lần:
 
 1. Lần 1 dùng full schema để sinh `cypherV1`.
-2. Dùng `cypherV1` để xác định label nào được nhắc đến.
-3. Nếu schema đủ lớn, filter schema còn phần liên quan.
-4. Lần 2 dùng linked schema để sinh `cypherV2`.
+2. Backend lấy danh sách label từ full schema.
+3. Backend tìm label xuất hiện trong `cypherV1`.
+4. Nếu schema đủ lớn, backend filter schema theo các label đó.
+5. Lần 2 dùng linked schema để sinh `cypherV2`.
 
-Nếu schema nhỏ hoặc số label ít, hệ thống giữ nguyên full schema để tránh lọc nhầm.
+Điều kiện bỏ qua filter:
+
+- Số label trong schema `<= 10`.
+- Hoặc độ dài full schema `<= 4000` ký tự.
+- Hoặc không tìm thấy label nào trong `cypherV1`.
+
+Khi filter, backend giữ node properties của các label được nhắc đến, giữ relationship structure nếu cả hai đầu relationship đều thuộc tập label đó, và giữ toàn bộ relationship properties để tránh cắt nhầm property dùng chung.
 
 ### 10.3. Self-correction
 
@@ -897,6 +911,7 @@ Frontend hiển thị:
 | Kết quả | Component |
 |---|---|
 | Cypher sinh ra | `CypherBlock` |
+| Thống kê fraud/legit/other | `FraudStatsBar` |
 | Nodes/links | `GraphView` |
 | Scalars | `ScalarsPanel` |
 
@@ -924,11 +939,13 @@ encoding_maps
 pipeline_runs
 ```
 
-`DatasetMetaService.loadLatest()` reconstruct metadata từ ba collection:
+`DatasetMetaService.loadLatest()` reconstruct metadata từ ba collection chính:
 
-- `datasets`: nodeLabel, targetLabel, columns, hasModel, activeModelPath.
+- `datasets`: nodeLabel, targetLabel, columns, graphSchema, hasModel, activeModelPath.
 - `pipeline_configs`: relationCols, featureCols, encodedFeatureCols, rawColumns, originalIdCol, split config.
 - `encoding_maps`: maps cho categorical encoding.
+
+`pipeline_runs` lưu lịch sử từng lần full build/append, stats, training/inference result. `jobId` không còn là nguồn sự thật trong `datasets`; dataset state hiện tại được reconstruct từ dataset/config/encoding map đang active.
 
 ### 12.2. Metadata dùng cho append
 
@@ -953,12 +970,16 @@ Nếu thiếu raw info hoặc schema cache, append có thể bị chặn vì kh�
 Backend cần các biến môi trường chính:
 
 ```env
+# Backend
+PORT=3000
+
 # MongoDB
 MONGODB_URI=mongodb://127.0.0.1:27017/<database>
 
 # Colab LLM services
 CSV2GRAPH_LLM_URL=https://<ngrok-csv2graph>.ngrok-free.app
 CSV2GRAPH_TIMEOUT_MS=300000
+CSV2GRAPH_SCHEMA_PRESET=auto
 TEXT2CYPHER_URL=https://<ngrok-text2cypher>.ngrok-free.app
 AI_TIMEOUT_MS=180000
 
@@ -984,7 +1005,15 @@ GNN_EVAL_BATCH_SIZE=4096
 GNN_FANOUT1=20
 GNN_FANOUT2=15
 GNN_MONITOR=f1
+
+# CSV2Graph output/import tuning
+CSV2GRAPH_OUTPUT_DIR=data/csv2graph
+CSV2GRAPH_MAX_GROUP_SIZE=500
+CSV2GRAPH_NODE_BATCH_SIZE=5000
+CSV2GRAPH_EDGE_BATCH_SIZE=10000
 ```
+
+`AI_PROVIDER` và `AI_BASE_URL` là cấu hình của luồng AI cũ trong `AiModule`; luồng Text2Cypher chính hiện dùng `TEXT2CYPHER_URL`. `CSV2GRAPH_USE_APOC` còn xuất hiện trong `.env.example`, nhưng code ingest hiện tại không dùng APOC như một cơ chế runtime chính.
 
 Frontend cần:
 
@@ -1046,7 +1075,8 @@ CSV upload
   -> feature engineering
   -> star edges cho GNN
   -> nodes.csv / edges.csv / schema.json
-  -> optional data.pt/train/inference
+  -> nếu có targetLabel: build data.pt
+  -> nếu trainMode: train F-GNN
   -> ingest graph dị thể vào Neo4j
   -> lưu metadata vào MongoDB
 ```
@@ -1057,7 +1087,7 @@ CSV upload
 Natural language prompt
   -> lấy schema từ MongoDB/Neo4j
   -> LLM generate Cypher V1
-  -> schema linking
+  -> backend schema linking theo label trong Cypher V1
   -> LLM generate Cypher V2
   -> read-only guard
   -> Neo4j EXPLAIN
@@ -1073,11 +1103,11 @@ Natural language prompt
 ```text
 Append CSV
   -> load schema cũ từ MongoDB
-  -> validate columns
-  -> encode bằng encoding maps cũ
-  -> build inference data.pt
-  -> GNN service predict
-  -> gán is_fraud
+  -> validate columns, silent drop cột dư
+  -> nếu thiếu nhãn và có model: encode bằng encoding maps cũ
+  -> nếu thiếu nhãn và có model: build inference data.pt
+  -> nếu thiếu nhãn và có model: GNN service predict
+  -> nếu thiếu nhãn và có model: gán is_fraud
   -> MERGE vào Neo4j
   -> lưu pipeline run
 ```
