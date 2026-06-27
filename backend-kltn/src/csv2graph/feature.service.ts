@@ -1,34 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CsvRow, FullSchema } from './interfaces/classification-schema.interface';
+import {
+  CsvRow,
+  EncodingHint,
+  FullSchema,
+} from './interfaces/classification-schema.interface';
 
-/**
- * Tương đương ensure_node_id + preprocess_features ở pipeline.py.
- *
- * NestJS port của:
- *   - ensure_node_id        : auto-gen node_id 1..N hoặc rename col gốc thành 'node_id'
- *   - preprocessFeatures    :
- *       1. detect categorical (object/string non-numeric)
- *       2. Target Encoding  : categorical col → mean(targetLabel) per category
- *                             Fallback Frequency Encoding khi không có targetLabel
- *       3. cast bool        → 0.0/1.0
- *       4. parseFloat + fillna(0) cho numeric
- *
- * Tại sao Target Encoding thay vì One-Hot:
- *   - One-Hot biến 1 cột có k unique values thành k cột → phình chiều không kiểm soát được
- *     (city 1000 giá trị → 1000 cột, mỗi cột hầu hết là 0).
- *   - Target Encoding: 1 cột categorical → 1 cột float ∈ [0, 1], giữ nguyên số chiều.
- *   - Thông tin phân biệt gian lận được distill trực tiếp vào con số đó.
- */
 @Injectable()
 export class FeatureService {
   private readonly logger = new Logger(FeatureService.name);
-
-  /** Ngưỡng cardinality để log INFO khi dùng Target Encoding */
   private readonly cardinalityInfo = 50;
-
-  // ============================================================
-  // PUBLIC API
-  // ============================================================
 
   ensureNodeId(
     rows: CsvRow[],
@@ -63,26 +43,11 @@ export class FeatureService {
     return { rows, nodeIdCol: 'node_id', headers };
   }
 
-  /**
-   * Target Encoding cho categorical cols + cast float cho numeric/bool.
-   *
-   * KHÔNG mutate input rows — clone từng row trước khi encode. Caller có thể
-   * tiếp tục dùng raw rows cho nodes.csv / Neo4j ingest mà không bị encode.
-   *
-   * @param rows        Raw rows (sau ensureNodeId)
-   * @param featureCols Tên các cột cần encode (output của LLM classify)
-   * @param targetLabel Tên cột nhãn nhị phân (0/1). Nếu rỗng → Frequency Encoding.
-   *
-   * @returns
-   *   - encodedRows        : array mới, mỗi categorical col được thay bằng 1 float column.
-   *   - encodedFeatureCols : danh sách tên cột sau encode (số lượng bằng featureCols.length).
-   *
-   * Encoding map được log để debug và lưu trong schema để sidecar Python tái hiện.
-   */
   preprocessFeatures(
     rows: CsvRow[],
     featureCols: string[],
-    targetLabel: string = '',
+    targetLabel = '',
+    encodingHints: Record<string, EncodingHint> = {},
   ): {
     encodedRows: CsvRow[];
     encodedFeatureCols: string[];
@@ -91,84 +56,63 @@ export class FeatureService {
     const presentCols = featureCols.filter(
       (c) => rows.length > 0 && c in rows[0],
     );
-
-    const numericCols: string[] = [];
-    const boolCols: string[] = [];
-    const catCols: string[] = [];
+    const encodedRows = rows.map((row) => ({ ...row }));
+    const encodedFeatureCols: string[] = [];
+    const encodingMaps: Record<string, Record<string, number>> = {};
+    const hasTarget = !!targetLabel.trim();
+    const globalMean = hasTarget
+      ? this.computeGlobalTargetMean(rows, targetLabel)
+      : 0.5;
 
     for (const col of presentCols) {
-      const kind = this.detectColKind(rows, col);
-      if (kind === 'numeric') numericCols.push(col);
-      else if (kind === 'bool') boolCols.push(col);
-      else catCols.push(col);
-    }
-
-    // ── Build Target / Frequency encoding maps ──
-    const hasTarget = !!(targetLabel && targetLabel.trim() !== '');
-    const encodingMaps: Record<string, Record<string, number>> = {};
-
-    for (const col of catCols) {
-      if (hasTarget) {
-        encodingMaps[col] = this.buildTargetEncodingMap(rows, col, targetLabel);
-      } else {
-        encodingMaps[col] = this.buildFrequencyEncodingMap(rows, col);
-      }
-
-      const uniqueCount = Object.keys(encodingMaps[col]).length;
-      if (uniqueCount > this.cardinalityInfo) {
-        this.logger.log(
-          `Column '${col}' — ${uniqueCount} unique values → ` +
-            (hasTarget ? 'Target Encoding' : 'Frequency Encoding') +
-            ` (1 cột float, không phình chiều)`,
-        );
-      }
-    }
-
-    if (catCols.length > 0) {
-      this.logger.log(
-        `[TargetEnc] Encoded ${catCols.length} categorical col(s) via ` +
-          (hasTarget
-            ? `Target Encoding (target='${targetLabel}')`
-            : 'Frequency Encoding (no targetLabel)') +
-          `: [${catCols.join(', ')}]`,
+      const hint = this.normalizeHint(
+        encodingHints[col] ?? this.inferEncodingHint(rows, col),
+        rows,
+        col,
       );
+
+      if (hint.type === 'datetime') {
+        encodedFeatureCols.push(...this.encodeDatetimeFeature(encodedRows, col));
+      } else if (hint.type === 'cyclical') {
+        encodedFeatureCols.push(
+          ...this.encodeCyclicalFeature(encodedRows, col, hint.period ?? 0),
+        );
+      } else if (hint.type === 'binary') {
+        for (const row of encodedRows) row[col] = this.boolToFloat(row[col]);
+        encodedFeatureCols.push(col);
+      } else if (hint.type === 'ordinal') {
+        const orderMap = this.buildOrdinalMap(hint.order ?? []);
+        for (const row of encodedRows) {
+          row[col] = this.ordinalToFloat(row[col], orderMap);
+        }
+        encodedFeatureCols.push(col);
+      } else if (hint.type === 'numeric') {
+        for (const row of encodedRows) row[col] = this.toFloat(row[col]);
+        encodedFeatureCols.push(col);
+      } else {
+        encodingMaps[col] = hasTarget
+          ? this.buildTargetEncodingMap(rows, col, targetLabel)
+          : this.buildFrequencyEncodingMap(rows, col);
+        for (const row of encodedRows) {
+          row[col] = this.encodeCategory(
+            row[col],
+            encodingMaps[col],
+            globalMean,
+          );
+        }
+        encodedFeatureCols.push(col);
+
+        const uniqueCount = Object.keys(encodingMaps[col]).length;
+        if (uniqueCount > this.cardinalityInfo) {
+          this.logger.log(
+            `Column '${col}' - ${uniqueCount} unique values -> ` +
+              (hasTarget ? 'Target Encoding' : 'Frequency Encoding'),
+          );
+        }
+      }
     }
 
-    // ── Tên cột encoded: giữ nguyên tên gốc (không thêm hậu tố) ──
-    // Điều này giúp schema.json dễ đọc và sidecar Python áp dụng cùng map.
-    const encodedCols: string[] = [
-      ...numericCols,
-      ...boolCols,
-      ...catCols, // giữ tên gốc — giá trị bên trong đã là float
-    ];
-
-    // ── Build encoded rows ──
-    const encodedRows: CsvRow[] = new Array(rows.length);
-    const globalMean = hasTarget ? this.computeGlobalTargetMean(rows, targetLabel) : 0.5;
-
-    for (let i = 0; i < rows.length; i++) {
-      const src = rows[i];
-      const dst: CsvRow = { ...src };
-
-      for (const col of numericCols) {
-        dst[col] = this.toFloat(src[col]);
-      }
-      for (const col of boolCols) {
-        dst[col] = this.boolToFloat(src[col]);
-      }
-      for (const col of catCols) {
-        const map = encodingMaps[col];
-        const raw = src[col];
-        const key =
-          raw === null || raw === undefined || raw === '' ? '__MISSING__' : String(raw);
-        // Fallback về globalMean khi gặp category chưa thấy (unseen at inference)
-        dst[col] = map[key] ?? map['__MISSING__'] ?? globalMean;
-      }
-
-      encodedRows[i] = dst;
-    }
-
-    return { encodedRows, encodedFeatureCols: encodedCols, encodingMaps };
+    return { encodedRows, encodedFeatureCols, encodingMaps };
   }
 
   encodeWithSchema(
@@ -182,62 +126,298 @@ export class FeatureService {
       schema.encoded_feature_cols?.length > 0
         ? schema.encoded_feature_cols
         : schema.feature_cols;
+    const encodingHints = schema.encoding_hints ?? {};
     const encodingMaps = schema.encoding_maps ?? {};
-    const encodedRows: CsvRow[] = new Array(rows.length);
+    const hasHints = Object.keys(encodingHints).length > 0;
+    const encodedRows = rows.map((row) => ({ ...row }));
 
-    for (let i = 0; i < rows.length; i++) {
-      const src = rows[i];
-      const dst: CsvRow = { ...src };
-
-      for (const col of encodedCols) {
-        const map = encodingMaps[col];
-        if (map) {
-          const raw = src[col];
-          const key =
-            raw === null || raw === undefined || raw === ''
-              ? '__MISSING__'
-              : String(raw);
-          dst[col] = map[key] ?? map['__MISSING__'] ?? 0.5;
-        } else {
-          dst[col] = this.boolToFloat(src[col]);
+    if (!hasHints) {
+      for (const row of encodedRows) {
+        for (const col of encodedCols) {
+          const map = encodingMaps[col];
+          row[col] = map
+            ? this.encodeCategory(row[col], map, 0.5)
+            : this.boolToFloat(row[col]);
         }
       }
-
-      encodedRows[i] = dst;
+      return { encodedRows, encodedFeatureCols: encodedCols };
     }
 
-    return { encodedRows, encodedFeatureCols: encodedCols };
+    const generatedCols: string[] = [];
+    for (const col of schema.feature_cols) {
+      if (rows.length === 0 || !(col in rows[0])) continue;
+      const hint = this.normalizeHint(
+        encodingHints[col] ?? this.inferEncodingHint(rows, col),
+        rows,
+        col,
+      );
+
+      if (hint.type === 'datetime') {
+        generatedCols.push(...this.encodeDatetimeFeature(encodedRows, col));
+      } else if (hint.type === 'cyclical') {
+        generatedCols.push(
+          ...this.encodeCyclicalFeature(encodedRows, col, hint.period ?? 0),
+        );
+      } else if (hint.type === 'binary') {
+        for (const row of encodedRows) row[col] = this.boolToFloat(row[col]);
+        generatedCols.push(col);
+      } else if (hint.type === 'ordinal') {
+        const orderMap = this.buildOrdinalMap(hint.order ?? []);
+        for (const row of encodedRows) {
+          row[col] = this.ordinalToFloat(row[col], orderMap);
+        }
+        generatedCols.push(col);
+      } else if (hint.type === 'numeric') {
+        for (const row of encodedRows) row[col] = this.toFloat(row[col]);
+        generatedCols.push(col);
+      } else {
+        const map = encodingMaps[col];
+        for (const row of encodedRows) {
+          row[col] = map
+            ? this.encodeCategory(row[col], map, 0.5)
+            : this.toFloat(row[col]);
+        }
+        generatedCols.push(col);
+      }
+    }
+
+    return {
+      encodedRows,
+      encodedFeatureCols: encodedCols.length > 0 ? encodedCols : generatedCols,
+    };
   }
 
-  // ============================================================
-  // PRIVATE — Encoding map builders
-  // ============================================================
+  private normalizeHint(
+    hint: EncodingHint,
+    rows: CsvRow[],
+    col: string,
+  ): EncodingHint {
+    const type = hint?.type;
+    if (
+      !['numeric', 'binary', 'ordinal', 'cyclical', 'datetime', 'target'].includes(
+        type,
+      )
+    ) {
+      return this.inferEncodingHint(rows, col);
+    }
+    if (type === 'cyclical') {
+      const period = Number(hint.period ?? this.defaultCyclePeriod(col));
+      return Number.isFinite(period) && period > 0
+        ? { type, period }
+        : this.inferEncodingHint(rows, col);
+    }
+    if (type === 'ordinal') {
+      return { type, order: hint.order ?? [] };
+    }
+    return { type };
+  }
 
-  /**
-   * Target Encoding: mỗi giá trị category → mean(targetLabel) trong nhóm đó.
-   *
-   * Ví dụ: category='grocery_pos' xuất hiện 500 lần,
-   *   trong đó 15 lần is_fraud=1 → encode value = 15/500 = 0.03.
-   *
-   * Key đặc biệt '__MISSING__' = mean của toàn bộ target (global mean).
-   */
+  private inferEncodingHint(rows: CsvRow[], col: string): EncodingHint {
+    const name = col.toLowerCase();
+    const sample = this.sampleNonEmptyValues(rows, col, 50);
+
+    if (/(date|time|datetime|timestamp)/.test(name)) {
+      const parsed = sample.filter((v) => !Number.isNaN(Date.parse(v)));
+      if (sample.length === 0 || parsed.length / sample.length >= 0.7) {
+        return { type: 'datetime' };
+      }
+    }
+
+    const cyclePeriod = this.defaultCyclePeriod(col);
+    if (cyclePeriod && /(day|month|week|hour|quarter)/.test(name)) {
+      return { type: 'cyclical', period: cyclePeriod };
+    }
+
+    if (sample.length > 0 && sample.every((v) => this.isBinaryLiteral(v))) {
+      return { type: 'binary' };
+    }
+
+    const numericCount = sample.filter((v) => this.isNumericLiteral(v)).length;
+    if (sample.length === 0 || numericCount / sample.length > 0.8) {
+      return { type: 'numeric' };
+    }
+
+    return { type: 'target' };
+  }
+
+  private defaultCyclePeriod(col: string): number | undefined {
+    const name = col.toLowerCase();
+    if (/hour/.test(name)) return 24;
+    if (/day|dow/.test(name)) return 7;
+    if (/week_of_month/.test(name)) return 5;
+    if (/week/.test(name)) return 52;
+    if (/month/.test(name)) return 12;
+    if (/quarter/.test(name)) return 4;
+    return undefined;
+  }
+
+  private encodeDatetimeFeature(rows: CsvRow[], col: string): string[] {
+    const newCols = [
+      `${col}_hour_sin`,
+      `${col}_hour_cos`,
+      `${col}_dow_sin`,
+      `${col}_dow_cos`,
+      `${col}_month_sin`,
+      `${col}_month_cos`,
+      `${col}_year`,
+    ];
+
+    for (const row of rows) {
+      const date = new Date(String(row[col] ?? ''));
+      const valid = !Number.isNaN(date.getTime());
+      const hour = valid ? date.getHours() : null;
+      const dow = valid ? date.getDay() : null;
+      const month = valid ? date.getMonth() + 1 : null;
+      const [hourSin, hourCos] = this.cyclicalPair(hour, 24);
+      const [dowSin, dowCos] = this.cyclicalPair(dow, 7);
+      const [monthSin, monthCos] = this.cyclicalPair(month, 12, false);
+
+      row[newCols[0]] = hourSin;
+      row[newCols[1]] = hourCos;
+      row[newCols[2]] = dowSin;
+      row[newCols[3]] = dowCos;
+      row[newCols[4]] = monthSin;
+      row[newCols[5]] = monthCos;
+      row[newCols[6]] = valid ? date.getFullYear() : 0;
+    }
+
+    return newCols;
+  }
+
+  private encodeCyclicalFeature(
+    rows: CsvRow[],
+    col: string,
+    period: number,
+  ): string[] {
+    const sinCol = `${col}_sin`;
+    const cosCol = `${col}_cos`;
+    for (const row of rows) {
+      const parsed = this.parseCycleValue(row[col], period, col);
+      const [sin, cos] = this.cyclicalPair(
+        parsed.value,
+        period,
+        parsed.zeroBased,
+      );
+      row[sinCol] = sin;
+      row[cosCol] = cos;
+    }
+    return [sinCol, cosCol];
+  }
+
+  private cyclicalPair(
+    raw: number | null,
+    period: number,
+    zeroBased = true,
+  ): [number, number] {
+    if (raw === null || !Number.isFinite(raw) || period <= 0) return [0, 0];
+    const value = zeroBased ? raw : raw - 1;
+    const angle = (2 * Math.PI * (((value % period) + period) % period)) / period;
+    return [Math.sin(angle), Math.cos(angle)];
+  }
+
+  private parseCycleValue(
+    raw: unknown,
+    period: number,
+    col: string,
+  ): { value: number | null; zeroBased: boolean } {
+    const lower = String(raw ?? '').trim().toLowerCase();
+    const dayMap: Record<string, number> = {
+      mon: 0,
+      monday: 0,
+      tue: 1,
+      tuesday: 1,
+      wed: 2,
+      wednesday: 2,
+      thu: 3,
+      thursday: 3,
+      fri: 4,
+      friday: 4,
+      sat: 5,
+      saturday: 5,
+      sun: 6,
+      sunday: 6,
+    };
+    const monthMap: Record<string, number> = {
+      jan: 1,
+      january: 1,
+      feb: 2,
+      february: 2,
+      mar: 3,
+      march: 3,
+      apr: 4,
+      april: 4,
+      may: 5,
+      jun: 6,
+      june: 6,
+      jul: 7,
+      july: 7,
+      aug: 8,
+      august: 8,
+      sep: 9,
+      sept: 9,
+      september: 9,
+      oct: 10,
+      october: 10,
+      nov: 11,
+      november: 11,
+      dec: 12,
+      december: 12,
+    };
+
+    if (period === 7 && lower in dayMap) {
+      return { value: dayMap[lower], zeroBased: true };
+    }
+    if (period === 12 && lower in monthMap) {
+      return { value: monthMap[lower], zeroBased: false };
+    }
+
+    const numeric = Number(lower);
+    if (!Number.isFinite(numeric)) return { value: null, zeroBased: true };
+    return {
+      value: numeric,
+      zeroBased: !(period === 12 && /month/.test(col.toLowerCase())),
+    };
+  }
+
+  private buildOrdinalMap(order: string[]): Map<string, number> {
+    const map = new Map<string, number>();
+    order.forEach((value, index) => {
+      map.set(String(value).trim().toLowerCase(), index);
+    });
+    return map;
+  }
+
+  private ordinalToFloat(value: unknown, map: Map<string, number>): number {
+    const key = String(value ?? '').trim().toLowerCase();
+    return map.get(key) ?? -1;
+  }
+
+  private encodeCategory(
+    raw: unknown,
+    map: Record<string, number>,
+    fallback: number,
+  ): number {
+    const key =
+      raw === null || raw === undefined || raw === '' ? '__MISSING__' : String(raw);
+    return map[key] ?? map['__MISSING__'] ?? fallback;
+  }
+
   private buildTargetEncodingMap(
     rows: CsvRow[],
     col: string,
     targetLabel: string,
   ): Record<string, number> {
-    const sumMap = new Map<string, number>();   // tổng target per category
-    const countMap = new Map<string, number>(); // số lần xuất hiện per category
-
+    const sumMap = new Map<string, number>();
+    const countMap = new Map<string, number>();
     let globalSum = 0;
     let globalCount = 0;
 
     for (const row of rows) {
-      const raw = row[col];
       const key =
-        raw === null || raw === undefined || raw === '' ? '__MISSING__' : String(raw);
+        row[col] === null || row[col] === undefined || row[col] === ''
+          ? '__MISSING__'
+          : String(row[col]);
       const targetVal = this.toFloat(row[targetLabel]);
-
       sumMap.set(key, (sumMap.get(key) ?? 0) + targetVal);
       countMap.set(key, (countMap.get(key) ?? 0) + 1);
       globalSum += targetVal;
@@ -245,136 +425,93 @@ export class FeatureService {
     }
 
     const globalMean = globalCount > 0 ? globalSum / globalCount : 0;
-
     const map: Record<string, number> = {};
     for (const [key, sum] of sumMap.entries()) {
-      const cnt = countMap.get(key) ?? 1;
-      map[key] = sum / cnt;
+      map[key] = sum / (countMap.get(key) ?? 1);
     }
-    // __MISSING__ fallback = global mean
-    if (!('__MISSING__' in map)) {
-      map['__MISSING__'] = globalMean;
-    }
-
+    if (!('__MISSING__' in map)) map['__MISSING__'] = globalMean;
     return map;
   }
 
-  /**
-   * Frequency Encoding (fallback khi không có targetLabel):
-   * mỗi giá trị category → tần suất xuất hiện (count / N).
-   *
-   * Dùng khi người dùng chỉ muốn ingest graph mà không có nhãn.
-   */
   private buildFrequencyEncodingMap(
     rows: CsvRow[],
     col: string,
   ): Record<string, number> {
     const countMap = new Map<string, number>();
     const n = rows.length;
-
     for (const row of rows) {
-      const raw = row[col];
       const key =
-        raw === null || raw === undefined || raw === '' ? '__MISSING__' : String(raw);
+        row[col] === null || row[col] === undefined || row[col] === ''
+          ? '__MISSING__'
+          : String(row[col]);
       countMap.set(key, (countMap.get(key) ?? 0) + 1);
     }
 
     const map: Record<string, number> = {};
-    for (const [key, cnt] of countMap.entries()) {
-      map[key] = n > 0 ? cnt / n : 0;
+    for (const [key, count] of countMap.entries()) {
+      map[key] = n > 0 ? count / n : 0;
     }
-    if (!('__MISSING__' in map)) {
-      map['__MISSING__'] = 0;
-    }
-
+    if (!('__MISSING__' in map)) map['__MISSING__'] = 0;
     return map;
   }
 
-  /**
-   * Tính global mean của target (dùng làm fallback cho unseen categories).
-   */
   private computeGlobalTargetMean(rows: CsvRow[], targetLabel: string): number {
     if (!targetLabel) return 0.5;
     let sum = 0;
-    let cnt = 0;
+    let count = 0;
     for (const row of rows) {
-      const v = row[targetLabel];
-      if (v !== null && v !== undefined && v !== '') {
-        sum += this.toFloat(v);
-        cnt++;
+      const value = row[targetLabel];
+      if (value !== null && value !== undefined && value !== '') {
+        sum += this.toFloat(value);
+        count++;
       }
     }
-    return cnt > 0 ? sum / cnt : 0.5;
+    return count > 0 ? sum / count : 0.5;
   }
 
-  // ============================================================
-  // PRIVATE — Col type detection
-  // ============================================================
-
-  /**
-   * Detect kiểu của col: 'numeric' | 'bool' | 'categorical'.
-   * - 'numeric'    : >80% giá trị parse ra float thành công.
-   * - 'bool'       : tất cả giá trị non-null là true/false (bool literal hoặc 'true'/'false').
-   * - else         : 'categorical' → sẽ dùng Target/Frequency Encoding.
-   * Sample 200 rows đầu (đủ representative, tránh duyệt full).
-   */
-  private detectColKind(
+  private sampleNonEmptyValues(
     rows: CsvRow[],
     col: string,
-  ): 'numeric' | 'bool' | 'categorical' {
-    const sampleSize = Math.min(rows.length, 200);
-    let total = 0;
-    let numericCount = 0;
-    let boolCount = 0;
-
-    for (let i = 0; i < sampleSize; i++) {
-      const v = rows[i][col];
-      if (v === null || v === undefined || v === '') continue;
-      total++;
-
-      if (typeof v === 'boolean') {
-        boolCount++;
-        continue;
-      }
-      if (typeof v === 'number' && !Number.isNaN(v)) {
-        numericCount++;
-        continue;
-      }
-      const s = String(v).trim();
-      if (s.toLowerCase() === 'true' || s.toLowerCase() === 'false') {
-        boolCount++;
-        continue;
-      }
-      const f = Number(s);
-      if (!Number.isNaN(f) && s !== '') {
-        numericCount++;
-      }
+    limit: number,
+  ): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of rows) {
+      const value = row[col];
+      if (value === null || value === undefined || value === '') continue;
+      const key = String(value).trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+      if (out.length >= limit) break;
     }
-
-    if (total === 0) return 'numeric';
-    if (boolCount === total) return 'bool';
-    if (numericCount / total > 0.8) return 'numeric';
-    return 'categorical';
+    return out;
   }
 
-  // ============================================================
-  // PRIVATE — Cast helpers
-  // ============================================================
-
-  private toFloat(v: unknown): number {
-    if (v === null || v === undefined || v === '') return 0;
-    if (typeof v === 'number') return Number.isNaN(v) ? 0 : v;
-    if (typeof v === 'boolean') return v ? 1 : 0;
-    const f = Number(String(v));
-    return Number.isNaN(f) ? 0 : f;
+  private isBinaryLiteral(value: string): boolean {
+    return ['yes', 'y', 'true', 't', '1', 'no', 'n', 'false', 'f', '0'].includes(
+      String(value).trim().toLowerCase(),
+    );
   }
 
-  private boolToFloat(v: unknown): number {
-    if (typeof v === 'boolean') return v ? 1.0 : 0.0;
-    if (v === null || v === undefined || v === '') return 0.0;
-    const s = String(v).trim().toLowerCase();
-    if (s === 'true' || s === '1') return 1.0;
-    if (s === 'false' || s === '0') return 0.0;
-    return this.toFloat(v);
+  private isNumericLiteral(value: string): boolean {
+    return String(value).trim() !== '' && Number.isFinite(Number(value));
+  }
+
+  private toFloat(value: unknown): number {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'number') return Number.isNaN(value) ? 0 : value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    const parsed = Number(String(value));
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  private boolToFloat(value: unknown): number {
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (value === null || value === undefined || value === '') return 0;
+    const lower = String(value).trim().toLowerCase();
+    if (['yes', 'y', 'true', 't', '1'].includes(lower)) return 1;
+    if (['no', 'n', 'false', 'f', '0'].includes(lower)) return 0;
+    return this.toFloat(value);
   }
 }

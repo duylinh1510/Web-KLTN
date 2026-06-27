@@ -10,6 +10,7 @@ import type {
   QueryResponse,
   DatasetInfoResponse,
   Csv2GraphRunResponse,
+  CsvSchemaPreviewResponse,
   GraphPreviewResponse,
   SuggestTransactionIdResponse,
   SuggestedPromptsResponse,
@@ -128,6 +129,26 @@ export async function runCsv2Graph(
  */
 export async function getGraphPreview(): Promise<GraphPreviewResponse> {
   const res = await apiClient.get<GraphPreviewResponse>("/graph/preview");
+  return res.data;
+}
+
+/**
+ * POST /csv2graph/preview-schema (multipart)
+ * Parse CSV + call LLM classify-schema, then return an editable schema draft.
+ */
+export async function previewCsvSchema(
+  formData: FormData,
+  signal?: AbortSignal,
+): Promise<CsvSchemaPreviewResponse> {
+  const res = await apiClient.post<CsvSchemaPreviewResponse>(
+    "/csv2graph/preview-schema",
+    formData,
+    {
+      signal,
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 3_600_000,
+    },
+  );
   return res.data;
 }
 

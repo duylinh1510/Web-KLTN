@@ -27,6 +27,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+
+os.environ.pop("SSLKEYLOGFILE", None)
+
 from torch_geometric.data import Data
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool

@@ -1,120 +1,171 @@
-# Tích hợp MongoDB Atlas — Persistent Storage cho Fraud Detection Platform
+# Triển khai MongoDB trong hệ thống hiện tại
 
-## Bối cảnh & Mục tiêu
+## Mục tiêu
 
-Hệ thống lưu trữ dữ liệu bằng **file hệ thống** (`.txt`, `.json`, `.csv`) và **localStorage** ở browser. Điều này gây mất data khi clear browser, không persistent qua các phiên làm việc, và file CSV trung gian chiếm nhiều dung lượng.
+MongoDB được dùng làm nơi lưu metadata và lịch sử thao tác của hệ thống. Neo4j vẫn là cơ sở dữ liệu đồ thị chính, còn MongoDB lưu các thông tin giúp hệ thống khôi phục trạng thái giữa các phiên làm việc, gồm:
 
-**Mục tiêu:** Chuyển sang MongoDB Atlas, thiết kế database theo **trách nhiệm chức năng** (domain-driven), tự động xóa CSV trung gian sau import, lưu lịch sử query server-side.
+- Thông tin kết nối Neo4j.
+- Trạng thái dataset hiện tại.
+- Cấu hình pipeline CSV2Graph.
+- Bảng mã hóa đặc trưng dùng lại khi append.
+- Lịch sử build/append CSV.
+- Lịch sử hỏi đáp ngôn ngữ tự nhiên sang Cypher.
+
+MongoDB không thay thế Neo4j. MongoDB chỉ lưu metadata, cấu hình, lịch sử và cache schema.
 
 ---
 
-## MongoDB Schema Design — 6 Collections
+## Tổng quan các collection
+
+Hệ thống hiện có 6 collection chính:
+
+| Collection | Vai trò |
+|---|---|
+| `connections` | Lưu thông tin kết nối Neo4j đã dùng. |
+| `datasets` | Lưu trạng thái dataset hiện tại theo từng database Neo4j. |
+| `pipeline_configs` | Lưu cấu hình CSV2Graph và thông tin CSV gốc để append. |
+| `encoding_maps` | Lưu bảng mã hóa categorical có kích thước lớn. |
+| `pipeline_runs` | Lưu lịch sử các lần full build hoặc append CSV. |
+| `queries` | Lưu lịch sử câu hỏi, Cypher và kết quả truy vấn. |
+
+Sơ đồ quan hệ logic:
 
 ```mermaid
 erDiagram
     connections {
         ObjectId _id
-        string uri
-        string database UK
+        String uri
+        String database
         Date connectedAt
         Date lastUsedAt
     }
 
     datasets {
         ObjectId _id
-        string database UK
-        string nodeLabel
-        string targetLabel
-        string[] columns
-        boolean hasModel
-        string activeModelPath
-        object trainingMetrics
-        string graphSchema
+        String database
+        String nodeLabel
+        String targetLabel
+        StringArray columns
+        String graphSchema
+        Boolean hasModel
+        String activeModelPath
+        Object trainingMetrics
         Date createdAt
         Date updatedAt
     }
 
     pipeline_configs {
         ObjectId _id
-        string database UK
-        string[] relationCols
-        string[] featureCols
-        string[] encodedFeatureCols
-        number trainRatio
-        number valRatio
-        number seed
-        number maxGroupSize
-        string originalIdCol
-        string[] rawColumns
+        String database
+        StringArray relationCols
+        StringArray featureCols
+        StringArray encodedFeatureCols
+        Object encodingHints
+        StringArray rawColumns
+        String originalIdCol
+        Number trainRatio
+        Number valRatio
+        Number seed
+        Number maxGroupSize
     }
 
     encoding_maps {
         ObjectId _id
-        string database UK
-        object maps
+        String database
+        Object maps
     }
 
     pipeline_runs {
         ObjectId _id
-        string database
-        string jobId
-        string mode
-        string fileName
-        object stats
-        object training
-        object inference
-        string dataPtPath
+        String database
+        String jobId
+        String mode
+        String fileName
+        Object stats
+        Object training
+        Object inference
+        String dataPtPath
+        Date startedAt
         Date completedAt
     }
 
     queries {
         ObjectId _id
-        string database
-        string prompt
-        string cypher
-        object graphData
-        object[] scalars
-        object metadata
-        string error
+        String database
+        String prompt
+        String cypher
+        Object graphData
+        ObjectArray scalars
+        Object metadata
+        String error
         Date createdAt
     }
 
-    datasets ||--o| pipeline_configs : "1:1 per database"
-    datasets ||--o| encoding_maps : "tách vì quá lớn (7MB+)"
-    datasets ||--o{ pipeline_runs : "lịch sử upload"
+    datasets ||--o| pipeline_configs : "cùng database"
+    datasets ||--o| encoding_maps : "cùng database"
+    datasets ||--o{ pipeline_runs : "lịch sử pipeline"
     datasets ||--o{ queries : "lịch sử hỏi đáp"
 ```
 
 ---
 
-### 1️⃣ `connections` — Thông tin kết nối Neo4j
+## 1. Collection `connections`
 
-**Trách nhiệm:** Lưu URI và database Neo4j mà user đã connect, để server ghi nhận phiên kết nối.
+### Chức năng
+
+Lưu thông tin kết nối Neo4j sau khi người dùng kết nối thành công. Mỗi database Neo4j có một bản ghi duy nhất.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `uri` | `String` | Không có | URI kết nối Neo4j, ví dụ `bolt://localhost:7687`. |
+| `database` | `String` | Không có | Tên database Neo4j. Trường này là duy nhất. |
+| `connectedAt` | `Date` | Ngày hiện tại | Thời điểm kết nối lần đầu được lưu. |
+| `lastUsedAt` | `Date` | Ngày hiện tại | Thời điểm kết nối được sử dụng gần nhất. |
+
+### Ví dụ document
 
 ```json
 {
   "_id": "ObjectId(...)",
   "uri": "bolt://localhost:7687",
   "database": "neo4j",
-  "connectedAt": "2026-05-26T13:15:00Z",
-  "lastUsedAt": "2026-05-26T14:30:00Z"
+  "connectedAt": "2026-06-27T10:00:00.000Z",
+  "lastUsedAt": "2026-06-27T10:15:00.000Z"
 }
 ```
 
-| Field | Ý nghĩa |
-|-------|---------|
-| `uri` | URI kết nối Neo4j |
-| `database` | Database đang dùng — unique key |
-| `connectedAt` | Lần đầu kết nối |
-| `lastUsedAt` | Lần cuối sử dụng |
-
 ---
 
-### 2️⃣ `datasets` — Trạng thái dataset trên Neo4j
+## 2. Collection `datasets`
 
-**Trách nhiệm:** *"Dataset hiện tại trông như thế nào? Node chính tên gì? Đã train model chưa? Schema graph để làm Text2Cypher là gì?"*
+### Chức năng
 
-**Thay thế file:** `_latest_neo4j.json` (phần metadata, không gồm schema/encoding) + `schema_neo4j.txt`
+Lưu trạng thái dataset hiện tại của từng database Neo4j. Đây là nơi backend biết dataset đã có dữ liệu hay chưa, node chính là gì, có model GNN chưa và schema text dùng cho Text2Cypher nằm ở đâu.
+
+Collection này thay thế một phần metadata trước đây từng lưu trong file `_latest_<database>.json` và cache schema text `schema_<database>.txt`.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `database` | `String` | Không có | Tên database Neo4j. Trường này là duy nhất. |
+| `nodeLabel` | `String` | Không có | Label node chính trong Neo4j, ví dụ `Transaction`. |
+| `targetLabel` | `String` | Không có | Cột nhãn gian lận, ví dụ `is_fraud`. |
+| `columns` | `String[]` | `[]` | Danh sách cột trên node chính sau khi xử lý/rename. |
+| `graphSchema` | `String` | Không có | Schema text cache phục vụ Text2Cypher. |
+| `hasModel` | `Boolean` | `false` | Cho biết dataset đã có model GNN dùng được hay chưa. |
+| `activeModelPath` | `String` | Không có | Đường dẫn model đang dùng cho inference. |
+| `trainingMetrics` | `Object` | Không có | Kết quả huấn luyện model, ví dụ F1, AUC, accuracy. |
+| `createdAt` | `Date` | Tự sinh | Thời điểm document được tạo. |
+| `updatedAt` | `Date` | Tự sinh | Thời điểm document được cập nhật gần nhất. |
+
+`createdAt` và `updatedAt` được tạo bởi tùy chọn `timestamps: true` trong Mongoose schema.
+
+### Ví dụ document
 
 ```json
 {
@@ -122,318 +173,391 @@ erDiagram
   "database": "neo4j",
   "nodeLabel": "Transaction",
   "targetLabel": "is_fraud",
-  "columns": ["node_id", "amt", "lat", "long", "city_pop", "merch_lat",
-              "merch_long", "unix_time", "zip", "trans_date_trans_time", "is_fraud"],
+  "columns": ["node_id", "amt", "lat", "long", "city_pop", "is_fraud"],
+  "graphSchema": "Node properties:\n- Transaction {node_id: STRING, amt: FLOAT, ...}",
   "hasModel": true,
-  "activeModelPath": "../python-services/models/fgnn_star.pt",
-  "trainingMetrics": { "val": { "f1": 0.85, "auc": 0.92 } },
-  "graphSchema": "Node properties:\n- Transaction {node_id: STRING, amt: STRING, ...}\n...",
-  "createdAt": "2026-05-23T16:08:18Z",
-  "updatedAt": "2026-05-26T13:15:00Z"
+  "activeModelPath": "L:/.../python-services/models/fgnn_star.pt",
+  "trainingMetrics": {
+    "val": { "f1": 0.85, "auc": 0.92 },
+    "test": { "f1": 0.83, "auc": 0.9 }
+  },
+  "createdAt": "2026-06-27T10:00:00.000Z",
+  "updatedAt": "2026-06-27T10:30:00.000Z"
 }
 ```
 
-| Field | Ý nghĩa |
-|-------|---------|
-| `database` | Database Neo4j — unique key |
-| `nodeLabel` | Label node chính (VD: `"Transaction"`) |
-| `targetLabel` | Cột nhãn fraud (VD: `"is_fraud"`) |
-| `columns` | Danh sách cột sau khi rename (node_id, features, target) |
-| `hasModel` | Đã có model GNN train xong chưa |
-| `activeModelPath` | Đường dẫn model đang active cho inference |
-| `trainingMetrics` | Kết quả training (F1, AUC...) |
-| `graphSchema` | Schema text cache — dùng cho Text2Cypher (thay file `schema_*.txt`) |
-
 ---
 
-### 3️⃣ `pipeline_configs` — Cấu hình pipeline & thông tin CSV gốc
+## 3. Collection `pipeline_configs`
 
-**Trách nhiệm:** *"Pipeline được cấu hình ra sao? Khi append CSV mới, validate bằng headers gốc nào?"*
+### Chức năng
 
-**Thay thế file:** Phần `schema` trong `_latest_neo4j.json` (không gồm encoding_maps) + `_raw_neo4j.json`
+Lưu cấu hình pipeline CSV2Graph của dataset hiện tại. Collection này giúp append CSV mới đúng schema cũ, không làm lệch model, `data.pt` hoặc encoding đã học từ lần full build.
+
+Collection này thay thế phần cấu hình pipeline trong `_latest_<database>.json` và thông tin CSV gốc trong `_raw_<database>.json`.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `database` | `String` | Không có | Tên database Neo4j. Trường này là duy nhất. |
+| `relationCols` | `String[]` | `[]` | Các cột được dùng để tạo node phụ và quan hệ trong star graph. |
+| `featureCols` | `String[]` | `[]` | Các cột được dùng làm đặc trưng đầu vào cho model. |
+| `encodedFeatureCols` | `String[]` | `[]` | Tên các cột sau encoding, dùng để build `data.pt`. |
+| `encodingHints` | `Object` | `{}` | Kiểu mã hóa cho từng cột feature do LLM gợi ý và người dùng xác nhận. |
+| `rawColumns` | `String[]` | `[]` | Header CSV gốc, dùng để kiểm tra file append có thiếu cột hay không. |
+| `originalIdCol` | `String` | Không có | Cột ID gốc người dùng chọn, sau đó được rename thành `node_id`. |
+| `trainRatio` | `Number` | `0.4` | Tỉ lệ dữ liệu train khi build `data.pt`. |
+| `valRatio` | `Number` | `0.2` | Tỉ lệ dữ liệu validation khi build `data.pt`. |
+| `seed` | `Number` | `42` | Seed dùng khi chia train/validation/test. |
+| `maxGroupSize` | `Number` | `500` | Giới hạn số lượng node trong mỗi nhóm quan hệ khi dựng graph. |
+
+### Cấu trúc `encodingHints`
+
+`encodingHints` là object có khóa là tên cột, giá trị là cấu hình encoding.
+
+Các kiểu encoding hiện được hỗ trợ:
+
+| Kiểu encoding | Ý nghĩa |
+|---|---|
+| `numeric` | Ép giá trị về số. Giá trị thiếu hoặc không hợp lệ được đưa về `0`. |
+| `binary` | Mã hóa giá trị nhị phân như yes/no, true/false, 0/1. |
+| `ordinal` | Mã hóa theo thứ tự do `order` quy định. |
+| `cyclical` | Mã hóa chu kỳ bằng sin/cos, dùng `period`. |
+| `datetime` | Tách thời gian thành hour/dow/month dạng sin/cos và year. |
+| `target` | Dùng target encoding nếu có nhãn, hoặc frequency encoding nếu ingest-only. |
+
+Ví dụ:
+
+```json
+{
+  "amt": { "type": "numeric" },
+  "gender": { "type": "binary" },
+  "trans_date_trans_time": { "type": "datetime" },
+  "month": { "type": "cyclical", "period": 12 },
+  "risk_level": { "type": "ordinal", "order": ["low", "medium", "high"] },
+  "merchant": { "type": "target" }
+}
+```
+
+Nếu dataset cũ chưa có `encodingHints`, backend dùng mặc định `{}` và tự suy luận kiểu encoding khi cần.
+
+### Ví dụ document
 
 ```json
 {
   "_id": "ObjectId(...)",
   "database": "neo4j",
-  "relationCols": ["merchant", "category", "gender", "state", "job"],
-  "featureCols": ["amt", "lat", "long", "city_pop", "merch_lat", "merch_long",
-                  "unix_time", "zip", "trans_date_trans_time"],
-  "encodedFeatureCols": ["amt", "lat", "long", "city_pop", "merch_lat",
-                         "merch_long", "unix_time", "zip", "trans_date_trans_time"],
+  "relationCols": ["cc_num", "merchant", "category", "job"],
+  "featureCols": ["amt", "lat", "long", "city_pop", "trans_date_trans_time"],
+  "encodedFeatureCols": [
+    "amt",
+    "lat",
+    "long",
+    "city_pop",
+    "trans_date_trans_time_hour_sin",
+    "trans_date_trans_time_hour_cos",
+    "trans_date_trans_time_dow_sin",
+    "trans_date_trans_time_dow_cos",
+    "trans_date_trans_time_month_sin",
+    "trans_date_trans_time_month_cos",
+    "trans_date_trans_time_year"
+  ],
+  "encodingHints": {
+    "amt": { "type": "numeric" },
+    "trans_date_trans_time": { "type": "datetime" }
+  },
+  "rawColumns": ["trans_num", "trans_date_trans_time", "cc_num", "merchant", "category", "amt", "is_fraud"],
+  "originalIdCol": "trans_num",
   "trainRatio": 0.4,
   "valRatio": 0.2,
   "seed": 42,
-  "maxGroupSize": 500,
-  "originalIdCol": "transaction_id",
-  "rawColumns": ["transaction_id", "trans_date_trans_time", "cc_num", "merchant",
-                 "category", "amt", "first", "last", "gender", "street", "city",
-                 "state", "zip", "lat", "long", "city_pop", "job", "dob",
-                 "trans_num", "unix_time", "merch_lat", "merch_long", "is_fraud"]
+  "maxGroupSize": 500
 }
 ```
 
-| Field | Ý nghĩa |
-|-------|---------|
-| `relationCols` | Cột nào dùng tạo quan hệ star graph |
-| `featureCols` | Cột nào là feature cho GNN |
-| `encodedFeatureCols` | Feature sau encoding (có thể khác featureCols) |
-| `trainRatio/valRatio/seed` | Tỷ lệ chia train/val/test + random seed |
-| `maxGroupSize` | Giới hạn nhóm star graph |
-| `originalIdCol` | Cột ID gốc trong CSV (chưa rename) |
-| `rawColumns` | Headers CSV gốc — dùng validate khi append |
-
 ---
 
-### 4️⃣ `encoding_maps` — Bảng mã hóa categorical (TÁCH RIÊNG)
+## 4. Collection `encoding_maps`
 
-**Trách nhiệm:** *"Khi append CSV mới, encode giá trị categorical thế nào cho khớp với lần build đầu?"*
+### Chức năng
 
-**Tại sao tách?** Chứa hàng trăm nghìn entries mapping (7MB+). Nhúng vào `datasets` sẽ vượt giới hạn 16MB/document khi dataset lớn hơn. Chỉ cần đọc khi chạy **Append mode**.
+Lưu các bảng mapping dùng cho target encoding hoặc frequency encoding. Collection này được tách riêng vì mapping categorical có thể rất lớn. Nếu nhúng vào `datasets` hoặc `pipeline_configs`, document có thể phình to và khó quản lý.
+
+Collection này chủ yếu được dùng khi append dữ liệu mới để đảm bảo dữ liệu append được encode giống lần full build.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `database` | `String` | Không có | Tên database Neo4j. Trường này là duy nhất. |
+| `maps` | `Object` | Không có | Bảng mapping theo từng cột categorical. |
+
+### Cấu trúc `maps`
+
+`maps` có dạng:
+
+```json
+{
+  "tên_cột": {
+    "giá_trị_gốc": 0.123,
+    "__MISSING__": 0.05
+  }
+}
+```
+
+Trong đó:
+
+- Khóa cấp 1 là tên cột cần encode.
+- Khóa cấp 2 là giá trị gốc của categorical value.
+- Giá trị là số đã encode.
+- `__MISSING__` là giá trị fallback khi gặp dữ liệu thiếu hoặc category chưa từng xuất hiện.
+
+### Ví dụ document
 
 ```json
 {
   "_id": "ObjectId(...)",
   "database": "neo4j",
   "maps": {
-    "trans_date_trans_time": {
-      "1/1/2019 0:00": 0,
-      "1/1/2019 12:30": 0.023,
-      "__MISSING__": 0.0058
+    "merchant": {
+      "fraud_Rippin, Kub and Mann": 0.83,
+      "fraud_Heller, Gutmann and Zieme": 0.12,
+      "__MISSING__": 0.05
     },
-    "zip": { "28654": 0.01, "10001": 0.008, "__MISSING__": 0.0058 }
+    "category": {
+      "grocery_pos": 0.02,
+      "shopping_net": 0.09,
+      "__MISSING__": 0.05
+    }
   }
 }
 ```
 
 ---
 
-### 5️⃣ `pipeline_runs` — Lịch sử upload CSV & kết quả pipeline
+## 5. Collection `pipeline_runs`
 
-**Trách nhiệm:** *"Tôi đã upload bao nhiêu file CSV? Mỗi lần kết quả ra sao?"*
+### Chức năng
 
-**Chức năng MỚI** — trước đây không lưu, kết quả build mất sau khi refresh.
+Lưu lịch sử mỗi lần chạy pipeline CSV2Graph, bao gồm full build và append. Collection này giúp xem lại file nào đã được upload, kết quả build ra sao, có train model hay inference hay không.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `database` | `String` | Không có | Database Neo4j được build hoặc append. |
+| `jobId` | `String` | Không có | Mã định danh của lần chạy pipeline. |
+| `mode` | `String` | Không có | Chế độ chạy. Chỉ nhận `full` hoặc `append`. |
+| `fileName` | `String` | Không có | Tên file CSV người dùng upload. |
+| `stats` | `Object` | Không có | Thống kê kết quả build, ví dụ số node, edge, feature. |
+| `training` | `Object` hoặc `null` | Không có | Kết quả train GNN nếu có. |
+| `inference` | `Object` hoặc `null` | Không có | Kết quả inference khi append nếu có model. |
+| `dataPtPath` | `String` | Không có | Đường dẫn file `data.pt`. |
+| `startedAt` | `Date` | Ngày hiện tại | Thời điểm bắt đầu ghi nhận pipeline run. |
+| `completedAt` | `Date` | Không có | Thời điểm pipeline hoàn tất. |
+
+Collection này có index:
+
+```ts
+{ database: 1, startedAt: -1 }
+```
+
+Index này giúp lấy lịch sử chạy pipeline theo database và sắp xếp lần mới nhất trước.
+
+### Ví dụ document
 
 ```json
 {
   "_id": "ObjectId(...)",
   "database": "neo4j",
-  "jobId": "2026-05-23T16-08-18-823Z_fraudTrain_part1_75bceb4d",
+  "jobId": "2026-06-27T15-08-31-222Z_fraudTrain_200_300_eeaec01d",
   "mode": "full",
-  "fileName": "fraudTrain_part1.csv",
+  "fileName": "fraudTrain_200_300.csv",
   "stats": {
-    "inputRows": 500000,
-    "numNodes": 500000,
-    "numEdges": 2450000,
-    "numFeatures": 9
+    "numNodes": 101,
+    "numEdges": 218,
+    "numFeatures": 16
   },
   "training": {
     "success": true,
-    "epochsRun": 145,
-    "metrics": { "val": { "f1": 0.85 }, "test": { "f1": 0.83 } }
+    "epochsRun": 31,
+    "bestMetric": 1.0
   },
   "inference": null,
-  "dataPtPath": "data/csv2graph/.../data.pt",
-  "completedAt": "2026-05-23T16:13:50Z"
+  "dataPtPath": "backend-kltn/data/csv2graph/.../data.pt",
+  "startedAt": "2026-06-27T15:08:31.222Z",
+  "completedAt": "2026-06-27T15:12:00.000Z"
 }
 ```
 
-| Field | Ý nghĩa |
-|-------|---------|
-| `mode` | `"full"` = build từ đầu, `"append"` = thêm data |
-| `fileName` | Tên file CSV user upload |
-| `stats` | Thống kê: rows, nodes, edges, features |
-| `training` | Kết quả train GNN (null nếu không train) |
-| `inference` | Kết quả inference append (null nếu full build) |
-
 ---
 
-### 6️⃣ `queries` — Lịch sử hỏi đáp NL → Cypher
+## 6. Collection `queries`
 
-**Trách nhiệm:** *"Tôi đã hỏi những câu gì? AI sinh Cypher gì? Kết quả graph ra sao?"*
+### Chức năng
 
-**Thay thế:** `localStorage["query-history"]` → persistent server-side, không mất khi clear browser. Backend tự động lưu mỗi khi user gửi query (fire-and-forget).
+Lưu lịch sử hỏi đáp giữa người dùng và hệ thống Text2Cypher. Mỗi câu hỏi có thể lưu prompt, Cypher sinh ra, kết quả graph, kết quả bảng, metadata debug hoặc lỗi nếu truy vấn thất bại.
+
+Collection này giúp lịch sử truy vấn nằm ở server thay vì chỉ nằm trong trình duyệt.
+
+### Thuộc tính
+
+| Thuộc tính | Kiểu dữ liệu | Mặc định | Mô tả |
+|---|---|---|---|
+| `_id` | `ObjectId` | Tự sinh | Khóa chính của document MongoDB. |
+| `database` | `String` | Không có | Database Neo4j được truy vấn. |
+| `prompt` | `String` | Không có | Câu hỏi ngôn ngữ tự nhiên của người dùng. |
+| `cypher` | `String` | Không có | Cypher cuối cùng được sinh ra hoặc được thực thi. |
+| `graphData` | `Object` | Không có | Kết quả dạng graph, thường gồm `nodes` và `links`. |
+| `scalars` | `Object[]` | Không có | Kết quả dạng bảng/scalar. |
+| `metadata` | `Object` | Không có | Metadata debug, ví dụ retry, cypherV1, cypherV2, linked schema. |
+| `error` | `String` | Không có | Thông báo lỗi nếu query thất bại. |
+| `createdAt` | `Date` | Ngày hiện tại | Thời điểm lưu query. |
+
+Collection này có index:
+
+```ts
+{ database: 1, createdAt: -1 }
+```
+
+Index này giúp lấy lịch sử câu hỏi theo database và sắp xếp câu hỏi mới nhất trước.
+
+### Ví dụ document
 
 ```json
 {
   "_id": "ObjectId(...)",
   "database": "neo4j",
-  "prompt": "Tìm top 10 merchant liên quan đến nhiều giao dịch fraud nhất",
-  "cypher": "MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode)\nWHERE t.is_fraud = '1'\nRETURN m.value, count(t) AS cnt ORDER BY cnt DESC LIMIT 10",
-  "graphData": { "nodes": [...], "links": [...] },
-  "scalars": [{ "merchant": "fraud_Rippin...", "cnt": 85 }],
-  "metadata": { "retries": 0, "cypherV1": "...", "cypherV2": "..." },
+  "prompt": "Show fraud transactions that share the same merchant with other transactions",
+  "cypher": "MATCH (fraud:Transaction)-[fm1:HAS_MERCHANT]->(merchant:MerchantNode)<-[fm2:HAS_MERCHANT]-(other:Transaction) WHERE toString(fraud.is_fraud) = \"1\" RETURN fraud, merchant, other, fm1, fm2 LIMIT 50",
+  "graphData": {
+    "nodes": [],
+    "links": []
+  },
+  "scalars": [],
+  "metadata": {
+    "retries": 0,
+    "cypherV1": "...",
+    "cypherV2": "..."
+  },
   "error": null,
-  "createdAt": "2026-05-26T13:15:00Z"
+  "createdAt": "2026-06-27T10:30:00.000Z"
 }
 ```
 
 ---
 
-## Mapping: File cũ → MongoDB Collection
+## Cách backend đọc và ghi MongoDB
 
-| Hiện tại (file/localStorage) | → MongoDB Collection | Ghi chú |
-|------------------------------|---------------------|---------|
-| `data/schemas/schema_neo4j.txt` | `datasets.graphSchema` | Nhúng vào datasets |
-| `_latest_neo4j.json` (metadata) | `datasets` | nodeLabel, columns, model info |
-| `_latest_neo4j.json` (pipeline config) | `pipeline_configs` | featureCols, relationCols, ratios |
-| `_latest_neo4j.json` (encoding_maps) | `encoding_maps` | Tách riêng vì 7MB+ |
-| `_raw_neo4j.json` | `pipeline_configs` | rawColumns, originalIdCol |
-| `localStorage["neo4j-connection"]` | `connections` | URI + database |
-| `localStorage["query-history"]` | `queries` | Server-side, auto-save |
-| *(không có)* | `pipeline_runs` | Chức năng MỚI |
+### Khi kết nối Neo4j
 
----
+Sau khi kết nối Neo4j thành công, backend lưu hoặc cập nhật document trong `connections`.
 
-## Proposed Changes
+Luồng chính:
 
-### Component 1: Infrastructure
-
-#### [MODIFY] `.env`
-- Thêm `MONGODB_URI=mongodb+srv://...@cluster0.xxx.mongodb.net/fraud_detection?retryWrites=true&w=majority`
-
-#### [MODIFY] `package.json`
-- Thêm: `@nestjs/mongoose`, `mongoose`
+1. Người dùng nhập URI, username, password, database.
+2. Backend kiểm tra kết nối Neo4j.
+3. Nếu thành công, backend gọi `ConnectionService.upsert()`.
+4. Collection `connections` được cập nhật theo `database`.
 
 ---
 
-### Component 2: MongoDB Module + 6 Schemas
+### Khi full build CSV
 
-#### [NEW] `src/mongodb/mongodb.module.ts`
-- `@Global()` module — `MongooseModule.forRootAsync()` + register all schemas/services
-- Đảm bảo services available everywhere không cần import riêng
+Khi database chưa có dataset và người dùng upload CSV, backend thực hiện full build.
 
-#### [NEW] `src/mongodb/schemas/` (6 files)
-- `connection.schema.ts`, `dataset.schema.ts`, `pipeline-config.schema.ts`
-- `encoding-map.schema.ts`, `pipeline-run.schema.ts`, `query.schema.ts`
+MongoDB được ghi vào các collection:
 
-#### [NEW] `src/mongodb/` (5 services)
-- `connection.service.ts` — upsert connection info
-- `dataset.service.ts` — CRUD datasets + updateGraphSchema()
-- `pipeline-config.service.ts` — CRUD pipeline config + rawColumns
-- `encoding-map.service.ts` — CRUD encoding maps
-- `pipeline-run.service.ts` — create pipeline run history
+| Collection | Dữ liệu được ghi |
+|---|---|
+| `datasets` | `nodeLabel`, `targetLabel`, `columns`, thông tin model nếu có. |
+| `pipeline_configs` | `relationCols`, `featureCols`, `encodedFeatureCols`, `encodingHints`, `rawColumns`, `originalIdCol`, split ratio. |
+| `encoding_maps` | Mapping encode categorical nếu có. |
+| `pipeline_runs` | Lịch sử lần full build, thống kê, training, dataPtPath. |
+
+Nếu có train model, `datasets.hasModel`, `datasets.activeModelPath` và `datasets.trainingMetrics` cũng được cập nhật.
 
 ---
 
-### Component 3: Migrate DatasetMetaService
+### Khi append CSV
 
-#### [MODIFY] `src/csv2graph/dataset-meta.service.ts`
-- `loadLatest()` → query MongoDB (datasets + pipeline_configs + encoding_maps)
-- `saveLatest()` → upsert 3 collections riêng biệt
-- `loadRawInfo()` / `saveRawInfo()` → pipeline_configs collection
-- Xóa tất cả `fs.readFileSync` / `fs.writeFileSync`
+Khi database đã có dataset, upload CSV mới sẽ chạy append.
 
----
+Backend đọc:
 
-### Component 4: Migrate SchemaService Cache
+- `datasets` để biết dataset hiện tại và model đang dùng.
+- `pipeline_configs.rawColumns` để kiểm tra file append có đủ cột gốc hay không.
+- `pipeline_configs.encodingHints` để encode theo schema cũ.
+- `encoding_maps.maps` để encode categorical giống lần full build.
 
-#### [MODIFY] `src/text2cypher/schema.service.ts`
-- `loadCachedSchema()` → `datasetService.findByDatabase(db)?.graphSchema`
-- `saveSchemaToDisk()` → `datasetService.updateGraphSchema(db, text)`
-- Xóa `fs`, `path` imports
+Quy tắc append hiện tại:
 
-#### [MODIFY] `src/neo4j/neo4j.service.ts`
-- `assertDatabaseUsable()` → check `datasets.graphSchema` trong MongoDB
-- Xóa `schemaCacheExists()`, `schemaCacheFilePath()`, `schemaCacheFileName()`
+- Thiếu cột gốc thì báo lỗi.
+- Cột dư trong file append bị bỏ qua.
+- Không cho đổi schema hoặc encoding khi append.
+- Nếu có model và file append thiếu target label, backend build `data.pt` inference để dự đoán nhãn gian lận.
 
----
-
-### Component 5: Query History (Server-side)
-
-#### [NEW] `src/history/history.module.ts`
-#### [NEW] `src/history/history.service.ts`
-- `save()`, `findAll(database, limit, offset)`, `deleteOne(id)`, `deleteAll(database)`
-
-#### [NEW] `src/history/history.controller.ts`
-- `POST /history` — lưu entry mới
-- `GET /history?database=&limit=50&offset=0` — lấy danh sách
-- `DELETE /history/:id` — xóa 1 entry
-- `DELETE /history` — xóa toàn bộ
-
-#### [MODIFY] `src/graph/graph.controller.ts`
-- Auto-save mỗi query vào `queries` collection (fire-and-forget)
-- Lưu cả query thành công và thất bại
-
-#### [MODIFY] `src/graph/graph.module.ts`
-- Import `HistoryModule`
+Sau append, backend ghi thêm một document vào `pipeline_runs`.
 
 ---
 
-### Component 6: Pipeline Run History + CSV Cleanup
+### Khi Text2Cypher cần schema
 
-#### [MODIFY] `src/csv2graph/csv2graph.service.ts`
-- **fullBuild**: Sau ingest → `cleanupJobDir()` + `pipelineRunService.create()`
-- **appendBuild**: Sau ingest → `cleanupJobDir()` + `pipelineRunService.create()`
+`datasets.graphSchema` là cache schema text dùng cho Text2Cypher.
 
-#### [MODIFY] `src/csv2graph/csv-output.service.ts`
-- Thêm `cleanupJobDir(jobDir, keepFiles)` — xóa CSV trung gian
-- Giữ: `data.pt` (43MB, cần cho GNN), `schema.json` (backup)
-- Xóa: `input.csv`, `nodes.csv`, `edges.csv`, `preprocessed.csv`
+Luồng chính:
 
----
-
-### Component 7: Neo4j Connection Persistence
-
-#### [MODIFY] `src/neo4j/neo4j.controller.ts`
-- `POST /neo4j/connect` → `connectionService.upsert(uri, database)` sau khi connect thành công
+1. Backend kiểm tra schema trong MongoDB.
+2. Nếu đã có `datasets.graphSchema`, Text2Cypher dùng cache này.
+3. Nếu cần cập nhật schema, backend introspect Neo4j rồi gọi `DatasetService.updateGraphSchema()`.
 
 ---
 
-### Component 8: Update AppModule
+### Khi người dùng hỏi bằng ngôn ngữ tự nhiên
 
-#### [MODIFY] `src/app.module.ts`
-```typescript
-imports: [
-  ConfigModule.forRoot({ isGlobal: true }),
-  EventEmitterModule.forRoot(),
-  MongoDbModule,       // NEW — @Global, auto-provides all MongoDB services
-  HistoryModule,       // NEW — query history REST API
-  Neo4jModule,
-  GraphModule,
-  AiModule,
-  Text2CypherModule,
-  Csv2GraphModule,
-],
-```
+Sau khi user gửi câu hỏi, backend lưu lịch sử vào `queries`.
 
----
+Trường hợp thành công:
 
-## Tổng kết File Changes
+- Lưu `prompt`.
+- Lưu `cypher`.
+- Lưu `graphData`.
+- Lưu `scalars`.
+- Lưu `metadata`.
 
-| Action | File | Mô tả |
-|--------|------|-------|
-| NEW | `src/mongodb/mongodb.module.ts` | Global MongoDB module |
-| NEW | `src/mongodb/schemas/*.schema.ts` (6 files) | Mongoose schemas |
-| NEW | `src/mongodb/*.service.ts` (5 files) | MongoDB CRUD services |
-| NEW | `src/history/history.{module,service,controller}.ts` | Query history API |
-| MODIFY | `src/app.module.ts` | Import MongoDbModule + HistoryModule |
-| MODIFY | `src/csv2graph/dataset-meta.service.ts` | File → MongoDB (3 collections) |
-| MODIFY | `src/csv2graph/csv2graph.service.ts` | Pipeline run + CSV cleanup (cả full + append) |
-| MODIFY | `src/csv2graph/csv-output.service.ts` | Thêm cleanupJobDir() |
-| MODIFY | `src/text2cypher/schema.service.ts` | File cache → datasets.graphSchema |
-| MODIFY | `src/neo4j/neo4j.service.ts` | Schema check → MongoDB |
-| MODIFY | `src/neo4j/neo4j.controller.ts` | Save connection info |
-| MODIFY | `src/graph/graph.controller.ts` | Auto-save query history |
-| MODIFY | `src/graph/graph.module.ts` | Import HistoryModule |
-| MODIFY | `.env` | Thêm MONGODB_URI |
-| MODIFY | `package.json` | Thêm @nestjs/mongoose, mongoose |
+Trường hợp thất bại:
+
+- Lưu `prompt`.
+- Lưu `error`.
+- Có thể lưu thêm metadata nếu có.
 
 ---
 
-## Verification Plan
+## Mapping từ file cũ sang MongoDB
 
-### Automated Tests
-1. `npm run build` — build thành công ✅
-2. Connect MongoDB Atlas → verify connection log
-3. Connect Neo4j → verify `connections` collection có document
-4. Upload CSV (full build) → verify `datasets`, `pipeline_configs`, `encoding_maps`, `pipeline_runs`
-5. Upload CSV (append) → verify `pipeline_runs` có entry mode="append"
-6. Verify CSV files bị xóa sau import (chỉ còn `data.pt` + `schema.json`)
-7. NL query → verify `queries` collection có document (auto-save)
-8. Append mode → verify đọc `rawColumns` + `encoding_maps` từ MongoDB
+| Cách lưu cũ | Collection hiện tại | Ghi chú |
+|---|---|---|
+| `schema_<database>.txt` | `datasets.graphSchema` | Cache schema text cho Text2Cypher. |
+| `_latest_<database>.json` | `datasets` | Trạng thái dataset và model. |
+| `_latest_<database>.json.schema` | `pipeline_configs` | Cấu hình relation, feature, encoding và split. |
+| `_latest_<database>.json.encoding_maps` | `encoding_maps` | Tách riêng vì mapping có thể rất lớn. |
+| `_raw_<database>.json` | `pipeline_configs.rawColumns`, `pipeline_configs.originalIdCol` | Dùng validate append. |
+| `localStorage` kết nối Neo4j | `connections` | Lưu thông tin kết nối phía server. |
+| `localStorage` lịch sử query | `queries` | Lưu lịch sử hỏi đáp phía server. |
+| Không có tương ứng cũ | `pipeline_runs` | Lưu lịch sử full build và append. |
 
-### Manual Verification
-- MongoDB Atlas → Data Explorer → kiểm tra 6 collections
-- Clear browser localStorage → reload → verify lịch sử query vẫn còn trên server
-- Upload CSV lần 2 (append) → verify không cần file `.json` local
+---
+
+## Ghi chú quan trọng
+
+- `database` là khóa logic quan trọng nhất trong hầu hết collection. Nó giúp metadata MongoDB gắn đúng với database Neo4j đang dùng.
+- `datasets` không lưu toàn bộ cấu hình pipeline. Cấu hình chi tiết nằm ở `pipeline_configs`.
+- `encoding_maps` chỉ lưu mapping encode lớn, không lưu mọi loại encoding. Kiểu encoding nằm ở `pipeline_configs.encodingHints`.
+- `pipeline_runs.jobId` chỉ là lịch sử từng lần chạy, không phải nguồn sự thật chính của dataset hiện tại.
+- Dataset hiện tại được backend reconstruct từ `datasets`, `pipeline_configs` và `encoding_maps`.
+- Dataset cũ không có `encodingHints` vẫn chạy được vì mặc định là `{}`.
+- MongoDB lưu metadata và lịch sử; dữ liệu graph thật vẫn nằm trong Neo4j.

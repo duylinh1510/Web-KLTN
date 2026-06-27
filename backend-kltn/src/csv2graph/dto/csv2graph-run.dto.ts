@@ -91,6 +91,15 @@ export class Csv2GraphRunDto {
   @IsString()
   nodeLabel?: string;
 
+  /**
+   * JSON string trong multipart FormData.
+   * Full build: schema da duoc user review/xac nhan tu preview-schema.
+   * Append: bo qua de khoa schema canonical cu.
+   */
+  @IsOptional()
+  @IsString()
+  schemaConfig?: string;
+
   @IsOptional()
   @toBooleanTransform
   @IsBoolean()

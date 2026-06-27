@@ -1,4 +1,4 @@
-import { useRef, useCallback, useMemo, useState } from "react";
+import { useRef, useCallback, useMemo } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { useQueryStore } from "../../store/queryStore";
 import { NodeDetailPanel } from "./NodeDetailPanel";
@@ -87,8 +87,9 @@ type ForceLink = { source: string; target: string; type: string };
 
 export function GraphView() {
   const graphData = useQueryStore((s) => s.graphData);
+  const selectedNodeId = useQueryStore((s) => s.selectedNodeId);
+  const setSelectedNodeId = useQueryStore((s) => s.setSelectedNodeId);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [selectedNode, setSelectedNode] = useState<ForceNode | null>(null);
 
   // Transform data cho react-force-graph-2d
   const data = useMemo(() => {
@@ -110,6 +111,35 @@ export function GraphView() {
 
     return { nodes, links };
   }, [graphData]);
+
+  const selectedNode = useMemo(() => {
+    if (!data || !selectedNodeId) return null;
+    return data.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  }, [data, selectedNodeId]);
+
+  const relatedNodes = useMemo(() => {
+    if (!graphData || !selectedNodeId) return [];
+    const nodeById = new Map(graphData.nodes.map((node) => [node.id, node]));
+
+    return graphData.links
+      .map((link) => {
+        if (link.source === selectedNodeId) {
+          const node = nodeById.get(link.target);
+          return node
+            ? { node, relationshipType: link.type, direction: "out" as const }
+            : null;
+        }
+        if (link.target === selectedNodeId) {
+          const node = nodeById.get(link.source);
+          return node
+            ? { node, relationshipType: link.type, direction: "in" as const }
+            : null;
+        }
+        return null;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .slice(0, 24);
+  }, [graphData, selectedNodeId]);
 
   // Check if the current result set has any fraud-aware nodes
   const hasFraudData = useMemo(() => {
@@ -133,10 +163,25 @@ export function GraphView() {
       const y = node.y ?? 0;
       const fraudStatus = getFraudStatus(node.properties);
       const isTransaction = fraudStatus !== "unknown";
+      const isSelected = node.id === selectedNodeId;
 
       // Transaction nodes are larger for emphasis
       const r = isTransaction ? 8 : 5;
       const baseColor = getNodeColor(node.label);
+
+      if (isSelected) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 8, 0, 2 * Math.PI);
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(x, y, r + 11, 0, 2 * Math.PI);
+        ctx.strokeStyle = "rgba(250,204,21,0.35)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
 
       // ── Fraud glow ring (outer) ──
       if (fraudStatus === "fraud") {
@@ -212,7 +257,7 @@ export function GraphView() {
           : displayText;
       ctx.fillText(shortText, x, y + r + 2);
     },
-    [],
+    [selectedNodeId],
   );
 
   // Node tooltip
@@ -232,8 +277,8 @@ export function GraphView() {
 
   // Click handler
   const handleNodeClick = useCallback((node: ForceNode) => {
-    setSelectedNode((prev) => (prev?.id === node.id ? null : node));
-  }, []);
+    setSelectedNodeId(node.id === selectedNodeId ? null : node.id);
+  }, [selectedNodeId, setSelectedNodeId]);
 
   // Pointer area paint — defines the clickable hit zone for each node.
   // Required when using custom nodeCanvasObject, otherwise clicks won't register.
@@ -289,7 +334,8 @@ export function GraphView() {
       {selectedNode && (
         <NodeDetailPanel
           node={selectedNode}
-          onClose={() => setSelectedNode(null)}
+          relatedNodes={relatedNodes}
+          onClose={() => setSelectedNodeId(null)}
         />
       )}
     </div>

@@ -6,7 +6,7 @@ Mọi thao tác file (CSV, build data.pt) đều thực hiện ở local NestJS 
 
 Endpoint duy nhất:
     POST /classify-schema  — Dùng LLM phân loại cột CSV thành
-    {node_id, relation_cols, feature}.
+    {node_id, relation_cols, feature, encoding_hints}.
 
 Copy toàn bộ file này vào 1 cell Colab (sau khi đã set HF_TOKEN, NGROK_TOKEN
 trong Secrets) rồi run.
@@ -102,7 +102,9 @@ EXCLUSION RULES (strictly enforced):
 - A column in relation_cols MUST NOT appear in feature.
 - Free-text columns (long descriptions, URLs, names, addresses) MUST be excluded from all categories.
 - PII columns (first name, last name, street address, date of birth) MUST be excluded from all categories.
-- Redundant columns (e.g. a date string when a unix timestamp already exists) MUST be excluded.
+- Redundant columns MUST be excluded, but datetime strings may be kept as features when their hour/day/month cycles carry behavioral signal; mark them as "datetime" so they are parsed into cyclical components instead of target encoded.
+- Prefer stable entity identifiers for relation_cols (card/account/customer/device/merchant/IP/email).
+- Avoid broad demographic or coarse geographic columns as relation_cols (gender, sex, city, state, country, zip/postal code); they create noisy hubs.
 
 ENCODING RULES (for every column listed in "feature", provide an entry in "encoding_hints"):
 - "datetime": Column is a date/time string (e.g. "2024-01-15 08:30:00", "Jan-2020"). Will be parsed and split into cyclical sin/cos components + year.
@@ -150,7 +152,7 @@ Columns: trans_num, cc_num, merchant, category, amt, first, last, gender, street
 Output:
 {
   "node_id": "trans_num",
-  "relation_cols": ["merchant", "category", "gender", "state", "job"],
+  "relation_cols": ["cc_num", "merchant", "category", "job"],
   "feature": ["amt", "lat", "long", "city_pop", "merch_lat", "merch_long", "unix_time", "zip", "trans_date_trans_time"],
   "encoding_hints": {
     "amt":                    {"type": "numeric"},
@@ -164,7 +166,7 @@ Output:
     "trans_date_trans_time":  {"type": "datetime"}
   }
 }
-Reasoning: trans_num is unique ID. merchant/category/gender/state/job are shared categorical entities. amt/lat/long/city_pop/merch_lat/merch_long/unix_time/zip are plain numbers. trans_date_trans_time is a datetime string, parsed into cyclical components. first/last/street/city/dob/cc_num are PII, excluded. is_fraud is target label, excluded.
+Reasoning: trans_num is unique ID. cc_num/merchant/category/job are shared transaction entities. amt/lat/long/city_pop/merch_lat/merch_long/unix_time/zip are plain numbers. trans_date_trans_time is a datetime string, parsed into cyclical components. first/last/street/city/dob are PII, excluded. gender/state are too broad for edges and are excluded. is_fraud is target label, excluded.
 
 Example 3 - Real_Fake_Job_Posting:
 Columns: job_id, title, location, department, salary_range, company_profile, description, requirements, benefits, telecommuting, has_company_logo, has_questions, employment_type, required_experience, required_education, industry, function, fraudulent
@@ -216,17 +218,15 @@ Reasoning: policy_number is unique ID. make/accident_area/sex/marital_status are
 
 
 def build_classify_messages(valid_columns, sample_values, target_label):
-    user_content = f"""Columns: {json.dumps(valid_columns)}
-
-Sample values:
-{json.dumps(sample_values, indent=2, default=str)}
-
-Target label: {target_label}
-
-{CLASSIFY_FEW_SHOT}
-Now classify. Output VALID JSON ONLY:"""
+    system_content = CLASSIFY_SYSTEM.format(
+        valid_columns=json.dumps(valid_columns),
+        sample_values=json.dumps(sample_values, indent=2, default=str),
+        target_label=target_label,
+        few_shot=CLASSIFY_FEW_SHOT,
+    )
+    user_content = "Now classify these CSV columns. Output VALID JSON ONLY."
     return [
-        {"role": "system", "content": CLASSIFY_SYSTEM},
+        {"role": "system", "content": system_content},
         {"role": "user",   "content": user_content},
     ]
 
@@ -310,6 +310,7 @@ async def classify_schema(req: ClassifyRequest):
     parsed.setdefault("node_id", None)
     parsed.setdefault("relation_cols", [])
     parsed.setdefault("feature", [])
+    parsed.setdefault("encoding_hints", {})
     return parsed
 
 

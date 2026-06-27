@@ -125,11 +125,33 @@ export type DatasetInfoResponse = ApiSuccess<{
   hasModel?: boolean;
 }>;
 
+export type EncodingType =
+  | "numeric"
+  | "binary"
+  | "ordinal"
+  | "cyclical"
+  | "datetime"
+  | "target";
+
+export type EncodingHint = {
+  type: EncodingType;
+  period?: number;
+  order?: string[];
+};
+
+export type CsvSchemaConfig = {
+  node_id: string | null;
+  relation_cols: string[];
+  feature: string[];
+  encoding_hints: Record<string, EncodingHint>;
+};
+
 export type Csv2GraphFullSchema = {
   node_id: string;
   relation_cols: string[];
   feature_cols: string[];
   encoded_feature_cols: string[];
+  encoding_hints: Record<string, EncodingHint>;
   target_label: string;
   train_ratio: number;
   val_ratio: number;
@@ -224,6 +246,15 @@ export type SuggestTransactionIdResponse = ApiSuccess<{
   suggestion: string | null;
   /** Danh sách cột unique (số lượng giá trị duy nhất = số rows) */
   uniqueCols: string[];
+}>;
+
+/** POST /csv2graph/preview-schema */
+export type CsvSchemaPreviewResponse = ApiSuccess<{
+  schema: CsvSchemaConfig;
+  headers: string[];
+  sampleValues: Record<string, unknown[]>;
+  uniqueCols: string[];
+  encodingOptions: EncodingType[];
 }>;
 
 // ============================================================

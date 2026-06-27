@@ -11,6 +11,7 @@ type QueryState = {
   errorMessages: string[];
   controller: AbortController | null;
   activeHistoryId: string | null;
+  selectedNodeId: string | null;
 };
 
 type QueryActions = {
@@ -25,6 +26,7 @@ type QueryActions = {
   }) => void;
   finishError: (messages: string[], historyId?: string) => void;
   cancel: () => void;
+  setSelectedNodeId: (nodeId: string | null) => void;
   resetToHistory: (payload: {
     prompt: string;
     cypher: string | null;
@@ -45,6 +47,7 @@ const initialState: QueryState = {
   errorMessages: [],
   controller: null,
   activeHistoryId: null,
+  selectedNodeId: null,
 };
 
 export const useQueryStore = create<QueryState & QueryActions>()(
@@ -74,6 +77,7 @@ export const useQueryStore = create<QueryState & QueryActions>()(
         metadata: metadata ?? null,
         controller: null,
         activeHistoryId: historyId ?? null,
+        selectedNodeId: null,
       }),
 
     finishError: (messages, historyId) =>
@@ -82,6 +86,7 @@ export const useQueryStore = create<QueryState & QueryActions>()(
         errorMessages: messages,
         controller: null,
         activeHistoryId: historyId ?? null,
+        selectedNodeId: null,
       }),
 
     cancel: () => {
@@ -90,8 +95,11 @@ export const useQueryStore = create<QueryState & QueryActions>()(
       set({
         stage: QueryStage.CANCELLED,
         controller: null,
+        selectedNodeId: null,
       });
     },
+
+    setSelectedNodeId: (nodeId) => set({ selectedNodeId: nodeId }),
 
     resetToHistory: ({ prompt, cypher, graphData, scalars, historyId }) =>
       set({
@@ -102,6 +110,7 @@ export const useQueryStore = create<QueryState & QueryActions>()(
         graphData: graphData ?? null,
         scalars,
         activeHistoryId: historyId,
+        selectedNodeId: null,
       }),
 
     resetAll: () => {

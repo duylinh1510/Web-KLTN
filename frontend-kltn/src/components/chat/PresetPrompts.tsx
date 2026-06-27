@@ -18,13 +18,13 @@ export function PresetPrompts({
   return (
     <div className="flex flex-col gap-2">
       <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-        Câu hỏi gợi ý
+        Mẫu phân tích
       </span>
 
       <div className="flex flex-wrap gap-2">
         {isLoading ? (
           <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-500">
-            Đang tạo gợi ý...
+            Đang tạo mẫu phân tích...
           </span>
         ) : (
           prompts.map((item) => (

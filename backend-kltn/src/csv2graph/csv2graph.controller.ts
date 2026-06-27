@@ -9,12 +9,12 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { parse } from 'csv-parse/sync';
 import { Neo4jService } from '../neo4j/neo4j.service';
 import { Csv2GraphService } from './csv2graph.service';
 import { SchemaLlmService } from './schema-llm.service';
 import { DatasetMetaService } from './dataset-meta.service';
 import { Csv2GraphRunDto } from './dto/csv2graph-run.dto';
-import { parse } from 'csv-parse/sync';
 import type { CsvRow } from './interfaces/classification-schema.interface';
 
 type UploadedCsvFile = {
@@ -35,7 +35,7 @@ export class Csv2GraphController {
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {
-        fileSize: 500 * 1024 * 1024, // 500 MB
+        fileSize: 500 * 1024 * 1024,
       },
     }),
   )
@@ -45,12 +45,12 @@ export class Csv2GraphController {
   ) {
     if (!file) {
       throw new HttpException(
-        'Thiếu file CSV (field name: "file")',
+        'Thieu file CSV (field name: "file")',
         HttpStatus.BAD_REQUEST,
       );
     }
     if (!file.buffer || file.buffer.length === 0) {
-      throw new HttpException('File CSV rỗng', HttpStatus.BAD_REQUEST);
+      throw new HttpException('File CSV rong', HttpStatus.BAD_REQUEST);
     }
 
     const result = await this.csv2graphService.run(
@@ -62,16 +62,51 @@ export class Csv2GraphController {
     return { status: 'success', ...result };
   }
 
-  /**
-   * GET /csv2graph/dataset-info
-   * Cho FE biết DB hiện tại đã có data chưa + canonical columns.
-   * Yêu cầu connect Neo4j (Neo4jService.getReadSession sẽ throw 400 nếu chưa).
-   */
+  @Post('preview-schema')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 500 * 1024 * 1024 } }),
+  )
+  async previewSchema(
+    @UploadedFile() file: UploadedCsvFile | undefined,
+    @Body('targetLabel') targetLabel?: string,
+  ) {
+    if (!file?.buffer || file.buffer.length === 0) {
+      throw new HttpException('Thieu file CSV', HttpStatus.BAD_REQUEST);
+    }
+
+    const { rows, headers } = this.parseCsvBuffer(file.buffer);
+    if (rows.length === 0 || headers.length === 0) {
+      throw new HttpException('File CSV rong', HttpStatus.BAD_REQUEST);
+    }
+
+    const schema = await this.schemaLlm.analyzeSchema(
+      rows,
+      headers,
+      targetLabel?.trim() ?? '',
+    );
+
+    return {
+      status: 'success',
+      schema,
+      headers,
+      sampleValues: this.buildSampleValues(rows, headers),
+      uniqueCols: this.findUniqueColumns(rows, headers),
+      encodingOptions: [
+        'numeric',
+        'binary',
+        'ordinal',
+        'cyclical',
+        'datetime',
+        'target',
+      ],
+    };
+  }
+
   @Get('dataset-info')
   async datasetInfo() {
     if (!this.neo4j.getStatus().connected) {
       throw new HttpException(
-        'Vui lòng kết nối Database trước!',
+        'Vui long ket noi Database truoc!',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -80,34 +115,34 @@ export class Csv2GraphController {
     return { status: 'success', ...info };
   }
 
-  /**
-   * POST /csv2graph/suggest-transaction-id
-   *
-   * Nhận file CSV (multipart), phân tích cột unique, gửi sang Colab LLM
-   * để gợi ý cột nào là transaction_id.
-   *
-   * Response:
-   *   { suggestion: string | null, uniqueCols: string[] }
-   *
-   * uniqueCols: các cột mà mọi giá trị đều duy nhất (dùng cho dropdown).
-   * suggestion: cột LLM cho là transaction_id khả năng nhất.
-   */
   @Post('suggest-transaction-id')
   @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: 500 * 1024 * 1024 } }), // 500 MB
+    FileInterceptor('file', { limits: { fileSize: 500 * 1024 * 1024 } }),
   )
   async suggestTransactionId(
     @UploadedFile() file: UploadedCsvFile | undefined,
   ) {
     if (!file?.buffer || file.buffer.length === 0) {
-      throw new HttpException('Thiếu file CSV', HttpStatus.BAD_REQUEST);
+      throw new HttpException('Thieu file CSV', HttpStatus.BAD_REQUEST);
     }
 
-    // Parse CSV (giống csv2graph.service.ts)
-    let rows: CsvRow[];
-    let headers: string[];
+    const { rows, headers } = this.parseCsvBuffer(file.buffer);
+    if (rows.length === 0 || headers.length === 0) {
+      return { status: 'success', suggestion: null, uniqueCols: [] };
+    }
+
+    const result = await this.schemaLlm.suggestTransactionId(
+      headers,
+      this.buildSampleValues(rows, headers),
+      rows,
+    );
+
+    return { status: 'success', ...result };
+  }
+
+  private parseCsvBuffer(buffer: Buffer): { rows: CsvRow[]; headers: string[] } {
     try {
-      rows = parse(file.buffer, {
+      const rows = parse(buffer, {
         columns: true,
         skip_empty_lines: true,
         bom: true,
@@ -115,41 +150,57 @@ export class Csv2GraphController {
         relax_quotes: true,
         relax_column_count: true,
       }) as CsvRow[];
-      headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+      return {
+        rows,
+        headers: rows.length > 0 ? Object.keys(rows[0]) : [],
+      };
     } catch (e: any) {
       throw new HttpException(
-        `Đọc CSV lỗi: ${e?.message ?? e}`,
+        `Doc CSV loi: ${e?.message ?? e}`,
         HttpStatus.BAD_REQUEST,
       );
     }
+  }
 
-    if (rows.length === 0 || headers.length === 0) {
-      return { status: 'success', suggestion: null, uniqueCols: [] };
-    }
-
-    // Lấy 5 sample values per column
+  private buildSampleValues(
+    rows: CsvRow[],
+    headers: string[],
+  ): Record<string, unknown[]> {
     const sampleValues: Record<string, unknown[]> = {};
     for (const col of headers) {
       const seen = new Set<string>();
       const samples: unknown[] = [];
       for (const row of rows) {
-        const v = row[col];
-        if (v === null || v === undefined || v === '') continue;
-        const key = String(v);
+        const value = row[col];
+        if (value === null || value === undefined || value === '') continue;
+        const key = String(value);
         if (seen.has(key)) continue;
         seen.add(key);
-        samples.push(v);
+        samples.push(value);
         if (samples.length >= 5) break;
       }
       sampleValues[col] = samples;
     }
+    return sampleValues;
+  }
 
-    const result = await this.schemaLlm.suggestTransactionId(
-      headers,
-      sampleValues,
-      rows,
-    );
-
-    return { status: 'success', ...result };
+  private findUniqueColumns(rows: CsvRow[], headers: string[]): string[] {
+    const uniqueCols: string[] = [];
+    for (const col of headers) {
+      const distinct = new Set<string>();
+      let hasNull = false;
+      for (const row of rows) {
+        const value = row[col];
+        if (value === null || value === undefined || value === '') {
+          hasNull = true;
+          break;
+        }
+        distinct.add(String(value));
+      }
+      if (!hasNull && distinct.size === rows.length) {
+        uniqueCols.push(col);
+      }
+    }
+    return uniqueCols;
   }
 }

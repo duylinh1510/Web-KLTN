@@ -1,5 +1,4 @@
 import torch
-from torch_geometric.utils import remove_self_loops
 
 """
 Sparse normalized Laplacian builder shared across spectral models.
@@ -29,6 +28,14 @@ def _compute_degree(row, num_nodes, device):
     deg = torch.zeros(num_nodes, device=device)
     deg.index_add_(0, row, torch.ones_like(row, dtype=torch.float))
     return deg
+
+
+def _remove_self_loops(edge_index):
+    if edge_index.numel() == 0:
+        return edge_index
+    row, col = edge_index
+    mask = row != col
+    return edge_index[:, mask]
 
 
 def _off_diagonal_entries(row, col, deg_inv_sqrt):
@@ -151,7 +158,7 @@ def build_laplacian_sparse(edge_index, num_nodes):
     """
     device = edge_index.device
 
-    edge_index_noloop, _ = remove_self_loops(edge_index)
+    edge_index_noloop = _remove_self_loops(edge_index)
     row, col = edge_index_noloop
 
     deg          = _compute_degree(row, num_nodes, device)

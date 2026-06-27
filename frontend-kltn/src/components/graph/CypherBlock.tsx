@@ -25,7 +25,7 @@ export function CypherBlock() {
     <div className="flex flex-col rounded-md border border-zinc-800 bg-zinc-950/60">
       <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-1.5">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">
-          Generated Cypher
+          Cypher truy vấn
         </span>
         <div className="flex items-center gap-2">
           {metadata && (

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.util
 import math
+import os
 import shutil
 import sys
 from dataclasses import asdict, dataclass
@@ -28,13 +30,14 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from torch_geometric.loader import NeighborLoader
-
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-from csvtograph.graph_utils import add_splits
+# Avoid urllib3/requests import failures on local Windows shells that set an
+# unreadable SSLKEYLOGFILE. PyG may import optional NLP modules transitively.
+os.environ.pop("SSLKEYLOGFILE", None)
+
 from fraud_model.model import FGNN
 from fraud_model.utils import class_weights_from_mask, make_y_masked
 
@@ -104,6 +107,29 @@ def load_data(data_path: str | Path) -> Any:
     return data
 
 
+def add_splits(data: Any, train_ratio=0.4, val_ratio=0.2, seed=42) -> Any:
+    num_nodes = int(data.num_nodes)
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    perm = torch.randperm(num_nodes, generator=generator)
+
+    train_end = int(num_nodes * float(train_ratio))
+    val_end = train_end + int(num_nodes * float(val_ratio))
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+    train_mask[perm[:train_end]] = True
+    val_mask[perm[train_end:val_end]] = True
+    test_mask[perm[val_end:]] = True
+
+    data.train_mask = train_mask
+    data.val_mask = val_mask
+    data.test_mask = test_mask
+    return data
+
+
 def ensure_splits(data: Any, params: TrainParams) -> Any:
     if not hasattr(data, "train_mask") or not hasattr(data, "val_mask") or not hasattr(data, "test_mask"):
         return add_splits(
@@ -123,6 +149,8 @@ def _fanout_list(params: TrainParams) -> list[int]:
 
 
 def build_loaders(data: Any, params: TrainParams):
+    from torch_geometric.loader import NeighborLoader
+
     fanout = _fanout_list(params)
     train_loader = NeighborLoader(
         data,
@@ -149,6 +177,18 @@ def build_loaders(data: Any, params: TrainParams):
         num_workers=params.num_workers,
     )
     return train_loader, val_loader, test_loader
+
+
+def has_neighbor_sampler_backend() -> bool:
+    try:
+        typing = importlib.import_module("torch_geometric.typing")
+        return bool(
+            getattr(typing, "WITH_PYG_LIB", False)
+            or getattr(typing, "WITH_TORCH_SPARSE", False)
+        )
+    except Exception as exc:
+        print(f"[train-fgnn] NeighborLoader backend check failed: {exc}")
+        return False
 
 
 def build_model(params: TrainParams, in_dim: int) -> FGNN:
@@ -328,6 +368,80 @@ def run_training_loop(
     return best_state, best_score, epochs_run, best_metrics
 
 
+def train_epoch_full_batch(
+    model: FGNN,
+    data: Any,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    y_masked: torch.Tensor,
+) -> float:
+    model.train()
+    optimizer.zero_grad()
+    out = model(data, y_masked=y_masked)
+    loss = criterion(out[data.train_mask], data.y[data.train_mask])
+    loss.backward()
+    optimizer.step()
+    return float(loss.item())
+
+
+@torch.no_grad()
+def collect_probs_full_batch(
+    model: FGNN,
+    data: Any,
+    mask: torch.Tensor,
+) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    out = model(data, y_masked=None)
+    probs = torch.softmax(out[mask], dim=-1).cpu().numpy()
+    y_true = data.y[mask].cpu().numpy()
+    return probs, y_true
+
+
+def run_training_loop_full_batch(
+    model: FGNN,
+    data: Any,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    y_masked: torch.Tensor,
+    params: TrainParams,
+) -> tuple[dict[str, torch.Tensor], float, int, dict[str, float | None]]:
+    best_score = -1.0
+    best_state: dict[str, torch.Tensor] | None = None
+    best_metrics: dict[str, float | None] = {}
+    bad_epochs = 0
+    epochs_run = 0
+
+    for epoch in range(1, params.epochs + 1):
+        loss = train_epoch_full_batch(model, data, optimizer, criterion, y_masked)
+        val_probs, val_y = collect_probs_full_batch(model, data, data.val_mask)
+        val_metrics = _metrics_from_probs(val_probs, val_y, threshold=0.5)
+        score = val_metrics["f1"] if params.monitor == "f1" else val_metrics["auc"]
+        score = float(score or -1.0)
+        epochs_run = epoch
+
+        if score > best_score:
+            best_score = score
+            best_state = copy.deepcopy(model.state_dict())
+            best_metrics = {**val_metrics, "loss": _json_safe_float(loss)}
+            bad_epochs = 0
+        else:
+            bad_epochs += 1
+
+        if epoch == 1 or epoch % 5 == 0:
+            print(
+                f"[train-fgnn] epoch={epoch} loss={loss:.4f} "
+                f"val_f1={val_metrics['f1']} val_auc={val_metrics['auc']} "
+                f"best_{params.monitor}={best_score:.4f}"
+            )
+        if bad_epochs >= params.patience:
+            print(f"[train-fgnn] early stop at epoch={epoch} patience={params.patience}")
+            break
+
+    if best_state is None:
+        raise RuntimeError("Training did not produce a best_state")
+    return best_state, best_score, epochs_run, best_metrics
+
+
 def train_fgnn(
     data_path: str | Path,
     save_path: str | Path,
@@ -350,35 +464,58 @@ def train_fgnn(
     data = ensure_splits(load_data(data_path), cfg)
     global_y_masked = make_y_masked(data.y, data.train_mask)
     in_dim = int(data.x.shape[1])
+    use_neighbor_loader = has_neighbor_sampler_backend()
 
     model = build_model(cfg, in_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     class_weights = class_weights_from_mask(data.y, data.train_mask, 2).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    train_loader, val_loader, test_loader = build_loaders(data, cfg)
 
-    best_state, best_score, epochs_run, val_metrics = run_training_loop(
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        global_y_masked,
-        device,
-        cfg,
-    )
+    if use_neighbor_loader:
+        train_loader, val_loader, test_loader = build_loaders(data, cfg)
+        best_state, best_score, epochs_run, val_metrics = run_training_loop(
+            model,
+            train_loader,
+            val_loader,
+            optimizer,
+            criterion,
+            global_y_masked,
+            device,
+            cfg,
+        )
+    else:
+        print(
+            "[train-fgnn] NeighborLoader backend not found "
+            "(pyg-lib/torch-sparse). Falling back to full-batch training."
+        )
+        data = data.to(device)
+        global_y_masked = global_y_masked.to(device)
+        best_state, best_score, epochs_run, val_metrics = run_training_loop_full_batch(
+            model,
+            data,
+            optimizer,
+            criterion,
+            global_y_masked,
+            cfg,
+        )
 
     model.load_state_dict(best_state)
     torch.save(best_state, save_path)
 
-    val_probs, val_y = collect_probs(model, val_loader, global_y_masked, device)
+    if use_neighbor_loader:
+        val_probs, val_y = collect_probs(model, val_loader, global_y_masked, device)
+    else:
+        val_probs, val_y = collect_probs_full_batch(model, data, data.val_mask)
     if cfg.threshold is None:
         threshold, _ = _tune_threshold(val_probs, val_y)
     else:
         threshold = float(cfg.threshold)
     val_metrics = _metrics_from_probs(val_probs, val_y, threshold=threshold)
 
-    test_probs, test_y = collect_probs(model, test_loader, global_y_masked, device)
+    if use_neighbor_loader:
+        test_probs, test_y = collect_probs(model, test_loader, global_y_masked, device)
+    else:
+        test_probs, test_y = collect_probs_full_batch(model, data, data.test_mask)
     test_metrics = _metrics_from_probs(test_probs, test_y, threshold=threshold)
 
     if active_path:
@@ -457,7 +594,7 @@ def main() -> None:
         seed=args.seed,
     )
     result = train_fgnn(args.data_path, args.save_path, args.active_model_path, params)
-    print(result)
+    print(_safe_text(result))
 
 
 if __name__ == "__main__":

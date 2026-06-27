@@ -8,7 +8,7 @@ import { DATASET_INFO_QUERY_KEY } from "./useDatasetInfo";
 import { GRAPH_PREVIEW_QUERY_KEY } from "./useGraphPreview";
 import { SUGGESTED_PROMPTS_QUERY_KEY } from "./useSuggestedPrompts";
 import { useConnectionStore } from "../store/connectionStore";
-import type { Csv2GraphRunResponse } from "../types";
+import type { Csv2GraphRunResponse, CsvSchemaConfig } from "../types";
 
 /**
  * Param cho buildCsv. `targetLabel` chỉ bắt buộc khi DB rỗng (BE tự
@@ -28,6 +28,7 @@ export type BuildCsvParams = {
   trainMode?: boolean;
   /** Demo mode: dùng active model fgnn_star.pt có sẵn, không train lại. */
   pretrainedMode?: boolean;
+  schemaConfig?: CsvSchemaConfig;
 };
 
 /**
@@ -50,6 +51,7 @@ export function useCsvBuild() {
       transactionIdCol,
       trainMode,
       pretrainedMode,
+      schemaConfig,
     }) => {
       const fd = new FormData();
       fd.append("file", file);
@@ -66,6 +68,9 @@ export function useCsvBuild() {
       }
       if (typeof pretrainedMode === "boolean") {
         fd.append("pretrainedMode", String(pretrainedMode));
+      }
+      if (schemaConfig) {
+        fd.append("schemaConfig", JSON.stringify(schemaConfig));
       }
 
       const controller = new AbortController();

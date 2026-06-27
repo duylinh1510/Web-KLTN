@@ -166,11 +166,14 @@ export class Csv2GraphService {
     // originalIdCol sẽ được cập nhật sau bước [3/8] khi biết user chọn cột nào.
     // (Lưu tạm với headers, sẽ ghi đè sau bước ensureNodeId)
 
-    this.logger.log('[2/8] LLM classify schema...');
-    const classification = await this.schemaLlm.analyzeSchema(
-      rows,
-      headers,
-      targetLabel,
+    this.logger.log('[2/8] Resolve schema classification...');
+    const classification = dto.schemaConfig
+      ? this.parseSchemaConfig(dto.schemaConfig, headers, targetLabel, rows)
+      : await this.schemaLlm.analyzeSchema(rows, headers, targetLabel);
+    this.logger.log(
+      dto.schemaConfig
+        ? '  using user-confirmed schemaConfig'
+        : '  using LLM schema suggestion',
     );
 
     this.logger.log('[3/8] Ensure node_id...');
@@ -214,11 +217,13 @@ export class Csv2GraphService {
 
 
     this.logger.log('[4/8] Preprocess features (Target Encoding + float) — encoded copy...');
-    const { encodedRows, encodedFeatureCols, encodingMaps } = this.feature.preprocessFeatures(
-      rawRows,
-      classification.feature,
-      targetLabel,
-    );
+    const { encodedRows, encodedFeatureCols, encodingMaps } =
+      this.feature.preprocessFeatures(
+        rawRows,
+        classification.feature,
+        targetLabel,
+        classification.encoding_hints,
+      );
 
     this.logger.log('[5/8] Build star edges (raw rows, raw relation_cols)...');
     const edges = this.starGraph.buildStarEdges(
@@ -236,6 +241,7 @@ export class Csv2GraphService {
       relation_cols: classification.relation_cols,
       feature_cols: rawFeatureCols,
       encoded_feature_cols: encodedFeatureCols,
+      encoding_hints: classification.encoding_hints,
       encoding_maps: encodingMaps,        // Target/Frequency Encoding maps
       target_label: targetLabel,  // '' ki ingest-only
       train_ratio: trainRatio,
@@ -657,6 +663,44 @@ export class Csv2GraphService {
   // ============================================================
   // PRIVATE
   // ============================================================
+
+  private parseSchemaConfig(
+    schemaConfig: string,
+    headers: string[],
+    targetLabel: string,
+    rows: CsvRow[],
+  ): ClassificationSchema {
+    try {
+      const parsed = JSON.parse(schemaConfig) as Record<string, unknown>;
+      const schema: Partial<ClassificationSchema> = {
+        node_id:
+          typeof parsed.node_id === 'string' ? parsed.node_id : null,
+        relation_cols: this.schemaLlm.flattenToStrings(parsed.relation_cols),
+        feature: this.schemaLlm.flattenToStrings(
+          parsed.feature ?? parsed.feature_cols,
+        ),
+        encoding_hints:
+          parsed.encoding_hints &&
+          typeof parsed.encoding_hints === 'object' &&
+          !Array.isArray(parsed.encoding_hints)
+            ? (parsed.encoding_hints as any)
+            : {},
+      };
+
+      return this.schemaLlm.enforceRules(
+        schema,
+        headers,
+        targetLabel,
+        rows,
+        false,
+      );
+    } catch (error: any) {
+      throw new HttpException(
+        `schemaConfig khong hop le: ${error?.message ?? error}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
 
   private applyInferenceLabels(
     rows: CsvRow[],

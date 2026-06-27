@@ -20,6 +20,9 @@ export class PipelineConfig {
   @Prop({ type: [String], default: [] })
   encodedFeatureCols!: string[];
 
+  @Prop({ type: Object, default: {} })
+  encodingHints!: Record<string, unknown>;
+
   /** Headers CSV gốc (chưa rename) — validate khi append */
   @Prop({ type: [String], default: [] })
   rawColumns!: string[];

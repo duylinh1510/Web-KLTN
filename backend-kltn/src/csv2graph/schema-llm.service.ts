@@ -5,6 +5,8 @@ import { firstValueFrom } from 'rxjs';
 import {
   ClassificationSchema,
   CsvRow,
+  EncodingHint,
+  EncodingType,
 } from './interfaces/classification-schema.interface';
 
 /**
@@ -17,6 +19,14 @@ import {
 @Injectable()
 export class SchemaLlmService {
   private readonly logger = new Logger(SchemaLlmService.name);
+  private readonly encodingTypes = new Set<EncodingType>([
+    'numeric',
+    'binary',
+    'ordinal',
+    'cyclical',
+    'datetime',
+    'target',
+  ]);
 
   constructor(
     private readonly http: HttpService,
@@ -67,16 +77,20 @@ export class SchemaLlmService {
 
     raw.relation_cols = this.flattenToStrings(raw.relation_cols);
     raw.feature = this.flattenToStrings(raw.feature);
+    raw.encoding_hints = this.normalizeRawEncodingHints(raw.encoding_hints);
 
     raw.feature.push(...hiddenFeatures);
 
-    const enforced = this.enforceRules(raw, headers, targetLabel);
+    const enforced = this.enforceRules(raw, headers, targetLabel, rows, true);
 
     this.logger.log(`Schema classified:`);
     this.logger.log(`  node_id      : ${enforced.node_id}`);
     this.logger.log(`  relation_cols: [${enforced.relation_cols.join(', ')}]`);
     this.logger.log(
       `  feature (${enforced.feature.length}) : [${enforced.feature.slice(0, 10).join(', ')}${enforced.feature.length > 10 ? ', ...' : ''}]`,
+    );
+    this.logger.log(
+      `  encoding_hints : ${Object.keys(enforced.encoding_hints).length} column(s)`,
     );
 
     return enforced;
@@ -113,9 +127,11 @@ export class SchemaLlmService {
    * Tương đương enforce_schema_rules ở pipeline.py.
    */
   enforceRules(
-    schema: ClassificationSchema,
+    schema: Partial<ClassificationSchema>,
     headers: string[],
     targetLabel: string,
+    rows: CsvRow[] = [],
+    refineRelations = false,
   ): ClassificationSchema {
     const headerSet = new Set(headers);
     const exclude = new Set<string>([targetLabel]);
@@ -140,7 +156,215 @@ export class SchemaLlmService {
         !relSet.has(c),
     );
 
-    return { node_id: nodeId, relation_cols: relationCols, feature };
+    const encodingHints = this.sanitizeEncodingHints(
+      schema.encoding_hints,
+      feature,
+      rows,
+    );
+
+    return {
+      node_id: nodeId,
+      relation_cols: refineRelations
+        ? this.refineRelationCols(relationCols, feature, rows)
+        : relationCols,
+      feature,
+      encoding_hints: encodingHints,
+    };
+  }
+
+  private normalizeRawEncodingHints(
+    input: unknown,
+  ): Record<string, EncodingHint> {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return {};
+    }
+
+    const out: Record<string, EncodingHint> = {};
+    for (const [col, rawHint] of Object.entries(input)) {
+      if (!rawHint || typeof rawHint !== 'object' || Array.isArray(rawHint)) {
+        continue;
+      }
+      const obj = rawHint as Record<string, unknown>;
+      const type = String(obj.type ?? '').toLowerCase() as EncodingType;
+      if (!this.encodingTypes.has(type)) continue;
+
+      const hint: EncodingHint = { type };
+      if (type === 'cyclical') {
+        const period = Number(obj.period);
+        if (Number.isFinite(period) && period > 0) {
+          hint.period = period;
+        }
+      }
+      if (type === 'ordinal') {
+        if (Array.isArray(obj.order)) {
+          hint.order = obj.order
+            .map((v) => String(v).trim())
+            .filter((v) => v.length > 0);
+        } else if (typeof obj.order === 'string') {
+          hint.order = obj.order
+            .split(',')
+            .map((v) => v.trim())
+            .filter((v) => v.length > 0);
+        }
+      }
+      out[col] = hint;
+    }
+    return out;
+  }
+
+  private sanitizeEncodingHints(
+    input: unknown,
+    featureCols: string[],
+    rows: CsvRow[],
+  ): Record<string, EncodingHint> {
+    const normalized = this.normalizeRawEncodingHints(input);
+    const out: Record<string, EncodingHint> = {};
+
+    for (const col of featureCols) {
+      const hint = normalized[col] ?? this.inferEncodingHint(col, rows);
+      if (hint.type === 'cyclical') {
+        const period = Number(hint.period ?? this.defaultCyclePeriod(col));
+        out[col] =
+          Number.isFinite(period) && period > 0
+            ? { type: 'cyclical', period }
+            : this.inferEncodingHint(col, rows);
+      } else if (hint.type === 'ordinal') {
+        const order =
+          hint.order && hint.order.length > 0
+            ? hint.order
+            : this.inferOrdinalOrder(col, rows);
+        out[col] = { type: 'ordinal', order };
+      } else {
+        out[col] = { type: hint.type };
+      }
+    }
+
+    return out;
+  }
+
+  private inferEncodingHint(col: string, rows: CsvRow[]): EncodingHint {
+    const name = col.toLowerCase();
+    const sample = this.sampleNonEmptyValues(col, rows, 50);
+
+    if (/(date|time|datetime|timestamp)/i.test(name)) {
+      const parsed = sample.filter((v) => !Number.isNaN(Date.parse(v)));
+      if (sample.length === 0 || parsed.length / sample.length >= 0.7) {
+        return { type: 'datetime' };
+      }
+    }
+
+    const cyclePeriod = this.defaultCyclePeriod(col);
+    if (cyclePeriod && /(day|month|week|hour|quarter)/i.test(name)) {
+      return { type: 'cyclical', period: cyclePeriod };
+    }
+
+    if (sample.length > 0 && sample.every((v) => this.isBinaryLiteral(v))) {
+      return { type: 'binary' };
+    }
+
+    const numericCount = sample.filter((v) => this.isNumericLiteral(v)).length;
+    if (sample.length === 0 || numericCount / sample.length > 0.8) {
+      return { type: 'numeric' };
+    }
+
+    return { type: 'target' };
+  }
+
+  private defaultCyclePeriod(col: string): number | undefined {
+    const name = col.toLowerCase();
+    if (/hour/.test(name)) return 24;
+    if (/day|dow/.test(name)) return 7;
+    if (/week_of_month/.test(name)) return 5;
+    if (/week/.test(name)) return 52;
+    if (/month/.test(name)) return 12;
+    if (/quarter/.test(name)) return 4;
+    return undefined;
+  }
+
+  private inferOrdinalOrder(col: string, rows: CsvRow[]): string[] {
+    return this.sampleNonEmptyValues(col, rows, 30);
+  }
+
+  private sampleNonEmptyValues(
+    col: string,
+    rows: CsvRow[],
+    limit: number,
+  ): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of rows) {
+      const value = row[col];
+      if (value === null || value === undefined || value === '') continue;
+      const key = String(value).trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  private isBinaryLiteral(value: string): boolean {
+    return ['yes', 'y', 'true', 't', '1', 'no', 'n', 'false', 'f', '0'].includes(
+      String(value).trim().toLowerCase(),
+    );
+  }
+
+  private isNumericLiteral(value: string): boolean {
+    if (String(value).trim() === '') return false;
+    return Number.isFinite(Number(value));
+  }
+
+  private refineRelationCols(
+    relationCols: string[],
+    featureCols: string[],
+    rows: CsvRow[],
+  ): string[] {
+    const featureSet = new Set(featureCols);
+    const weakNames = new Set([
+      'gender',
+      'sex',
+      'state',
+      'province',
+      'country',
+      'city',
+      'zip',
+      'zipcode',
+      'postal_code',
+    ]);
+    const kept: string[] = [];
+
+    for (const col of relationCols) {
+      if (featureSet.has(col)) continue;
+      if (weakNames.has(col.toLowerCase())) continue;
+      const stats = this.columnGroupStats(col, rows);
+      if (stats.unique <= 1) continue;
+      if (stats.largestGroupRatio > 0.25) continue;
+      kept.push(col);
+    }
+
+    return kept;
+  }
+
+  private columnGroupStats(
+    col: string,
+    rows: CsvRow[],
+  ): { unique: number; largestGroupRatio: number } {
+    if (rows.length === 0) return { unique: 0, largestGroupRatio: 0 };
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const value = row[col];
+      const key =
+        value === null || value === undefined || value === ''
+          ? '__MISSING__'
+          : String(value);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const largest = Math.max(0, ...counts.values());
+    return {
+      unique: counts.size,
+      largestGroupRatio: largest / rows.length,
+    };
   }
 
   // ============================================================
@@ -238,6 +462,9 @@ export class SchemaLlmService {
           ? data.relation_cols
           : [],
         feature: Array.isArray(data.feature) ? data.feature : [],
+        encoding_hints: this.normalizeRawEncodingHints(
+          (data as any).encoding_hints,
+        ),
       };
     } catch (error: any) {
       const msg =

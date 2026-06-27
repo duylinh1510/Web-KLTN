@@ -1,7 +1,22 @@
+export type EncodingType =
+  | 'numeric'
+  | 'binary'
+  | 'ordinal'
+  | 'cyclical'
+  | 'datetime'
+  | 'target';
+
+export interface EncodingHint {
+  type: EncodingType;
+  period?: number;
+  order?: string[];
+}
+
 export interface ClassificationSchema {
   node_id: string | null;
   relation_cols: string[];
   feature: string[];
+  encoding_hints: Record<string, EncodingHint>;
 }
 
 export interface FullSchema {
@@ -18,6 +33,7 @@ export interface FullSchema {
    * Dùng cho preprocessed.csv → data.pt (sidecar build PyG x tensor).
    */
   encoded_feature_cols: string[];
+  encoding_hints: Record<string, EncodingHint>;
   /**
    * Target Encoding maps cho từng categorical column.
    * Cấu trúc: { [colName]: { [categoryValue]: encodedFloat, '__MISSING__': globalMean } }

@@ -69,9 +69,9 @@ export function DatasetInfo() {
       </div>
 
       <div className="rounded bg-slate-950/40 px-2 py-1.5 text-[10px] leading-relaxed text-slate-400">
-        Khi append: CSV mới phải là <strong>subset</strong> các cột trên, cột
-        thiếu sẽ ingest <span className="font-mono">null</span>, cột thừa sẽ bị
-        reject. Bao gồm cột target.
+        Khi append: CSV mới phải có đủ cột gốc đã lưu trong schema. Cột thiếu
+        sẽ báo lỗi, cột dư sẽ bị bỏ qua để giữ schema cũ. Cột target được phép
+        thiếu nếu dataset có model để inference.
       </div>
     </div>
   );

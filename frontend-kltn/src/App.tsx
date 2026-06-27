@@ -13,6 +13,7 @@ import { CypherBlock } from "./components/graph/CypherBlock";
 import { FraudStatsBar } from "./components/graph/FraudStatsBar";
 import { GraphView } from "./components/graph/GraphView";
 import { ScalarsPanel } from "./components/graph/ScalarsPanel";
+import { SuspiciousTransactionsPanel } from "./components/graph/SuspiciousTransactionsPanel";
 
 function App() {
   const isConnected = useConnectionStore((s) => s.isConnected);
@@ -35,9 +36,9 @@ function App() {
   );
 
   const right = !isConnected ? (
-    <NotConnectedBlocker panelTitle="Đồ thị" />
+    <NotConnectedBlocker panelTitle="Phân tích gian lận" />
   ) : !hasData ? (
-    <NoDatasetBlocker panelTitle="Đồ thị" />
+    <NoDatasetBlocker panelTitle="Phân tích gian lận" />
   ) : (
     <RightPanel />
   );
@@ -57,6 +58,7 @@ function RightPanel() {
     <div className="flex h-full min-h-0 flex-col gap-3 text-sm">
       <CypherBlock />
       <FraudStatsBar />
+      <SuspiciousTransactionsPanel />
       <GraphView />
       <ScalarsPanel />
     </div>
