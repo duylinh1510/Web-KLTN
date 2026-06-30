@@ -47,6 +47,7 @@ async function migrate() {
           columns: meta.columns,
           hasModel: meta.hasModel ?? false,
           activeModelPath: meta.activeModelPath,
+          inferenceThreshold: meta.inferenceThreshold ?? meta.training?.threshold ?? null,
           trainingMetrics: meta.trainingMetrics,
         },
         $setOnInsert: { createdAt: new Date() },
@@ -63,7 +64,9 @@ async function migrate() {
           $set: {
             database,
             relationCols: schema.relation_cols ?? [],
+            relHetero: schema.rel_hetero ?? schema.relation_cols ?? [],
             featureCols: schema.feature_cols ?? [],
+            featureHetero: schema.feature_hetero ?? schema.feature_cols ?? [],
             encodedFeatureCols: schema.encoded_feature_cols ?? [],
             trainRatio: schema.train_ratio ?? 0.4,
             valRatio: schema.val_ratio ?? 0.2,

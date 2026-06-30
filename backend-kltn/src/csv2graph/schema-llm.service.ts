@@ -75,19 +75,32 @@ export class SchemaLlmService {
       targetLabel,
     );
 
-    raw.relation_cols = this.flattenToStrings(raw.relation_cols);
+    const rawRelationCols = this.flattenToStrings(raw.relation_cols);
+    raw.relation_cols = rawRelationCols;
+    raw.rel_hetero =
+      'rel_hetero' in raw
+        ? this.flattenToStrings((raw as any).rel_hetero)
+        : rawRelationCols;
     raw.feature = this.flattenToStrings(raw.feature);
     raw.encoding_hints = this.normalizeRawEncodingHints(raw.encoding_hints);
 
     raw.feature.push(...hiddenFeatures);
+    raw.feature_hetero =
+      'feature_hetero' in raw
+        ? this.flattenToStrings((raw as any).feature_hetero)
+        : raw.feature;
 
     const enforced = this.enforceRules(raw, headers, targetLabel, rows, true);
 
     this.logger.log(`Schema classified:`);
     this.logger.log(`  node_id      : ${enforced.node_id}`);
     this.logger.log(`  relation_cols: [${enforced.relation_cols.join(', ')}]`);
+    this.logger.log(`  rel_hetero   : [${enforced.rel_hetero.join(', ')}]`);
     this.logger.log(
       `  feature (${enforced.feature.length}) : [${enforced.feature.slice(0, 10).join(', ')}${enforced.feature.length > 10 ? ', ...' : ''}]`,
+    );
+    this.logger.log(
+      `  feature_hetero (${enforced.feature_hetero.length}) : [${enforced.feature_hetero.slice(0, 10).join(', ')}${enforced.feature_hetero.length > 10 ? ', ...' : ''}]`,
     );
     this.logger.log(
       `  encoding_hints : ${Object.keys(enforced.encoding_hints).length} column(s)`,
@@ -143,10 +156,10 @@ export class SchemaLlmService {
     }
     if (nodeId) exclude.add(nodeId);
 
-    const relationCols = (schema.relation_cols ?? []).filter(
+    const relationColsInput = (schema.relation_cols ?? []).filter(
       (c) => typeof c === 'string' && headerSet.has(c) && !exclude.has(c),
     );
-    const relSet = new Set(relationCols);
+    const relSet = new Set(relationColsInput);
 
     const feature = (schema.feature ?? []).filter(
       (c) =>
@@ -154,6 +167,29 @@ export class SchemaLlmService {
         headerSet.has(c) &&
         !exclude.has(c) &&
         !relSet.has(c),
+    );
+
+    const relationCols = refineRelations
+      ? this.refineRelationCols(relationColsInput, feature, rows)
+      : relationColsInput;
+
+    const relHeteroSource = Array.isArray(schema.rel_hetero)
+      ? schema.rel_hetero
+      : relationCols;
+    const relHetero = relHeteroSource.filter(
+      (c) => typeof c === 'string' && headerSet.has(c) && !exclude.has(c),
+    );
+    const relHeteroSet = new Set(relHetero);
+
+    const featureHeteroSource = Array.isArray(schema.feature_hetero)
+      ? schema.feature_hetero
+      : feature;
+    const featureHetero = featureHeteroSource.filter(
+      (c) =>
+        typeof c === 'string' &&
+        headerSet.has(c) &&
+        !exclude.has(c) &&
+        !relHeteroSet.has(c),
     );
 
     const encodingHints = this.sanitizeEncodingHints(
@@ -164,10 +200,10 @@ export class SchemaLlmService {
 
     return {
       node_id: nodeId,
-      relation_cols: refineRelations
-        ? this.refineRelationCols(relationCols, feature, rows)
-        : relationCols,
+      relation_cols: relationCols,
+      rel_hetero: relHetero,
       feature,
+      feature_hetero: featureHetero,
       encoding_hints: encodingHints,
     };
   }
@@ -440,7 +476,7 @@ export class SchemaLlmService {
     validColumns: string[],
     sampleValues: Record<string, unknown[]>,
     targetLabel: string,
-  ): Promise<ClassificationSchema> {
+  ): Promise<Partial<ClassificationSchema>> {
     const baseUrl = this.getBaseUrl();
     const timeout = this.getTimeout();
 
@@ -456,7 +492,7 @@ export class SchemaLlmService {
       if (!data || typeof data !== 'object') {
         throw new Error('Response không phải JSON object');
       }
-      return {
+      const out: Partial<ClassificationSchema> = {
         node_id: (data.node_id as any) ?? null,
         relation_cols: Array.isArray(data.relation_cols)
           ? data.relation_cols
@@ -466,6 +502,13 @@ export class SchemaLlmService {
           (data as any).encoding_hints,
         ),
       };
+      if (Array.isArray((data as any).rel_hetero)) {
+        out.rel_hetero = (data as any).rel_hetero;
+      }
+      if (Array.isArray((data as any).feature_hetero)) {
+        out.feature_hetero = (data as any).feature_hetero;
+      }
+      return out;
     } catch (error: any) {
       const msg =
         error?.response?.data?.detail ??

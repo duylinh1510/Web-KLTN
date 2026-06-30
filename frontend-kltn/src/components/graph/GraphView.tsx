@@ -10,6 +10,8 @@ import type { GraphNode } from "../../types";
 // `fraud_score` = optional GNN probability [0, 1] returned by predict-data-pt.
 const FRAUD_FLAG_KEYS = ["is_fraud", "predicted_fraud", "predictedLabel"];
 const FRAUD_SCORE_KEY = "fraud_score";
+const FRAUD_THRESHOLD_KEYS = ["inference_threshold", "inferenceThreshold"];
+const DEFAULT_FRAUD_THRESHOLD = 0.5;
 
 // ── Label-based color palette ──
 const LABEL_COLORS: Record<string, string> = {
@@ -76,6 +78,16 @@ function getFraudScore(properties: Record<string, unknown>): number | null {
   return isNaN(num) ? null : num;
 }
 
+function getInferenceThreshold(properties: Record<string, unknown>): number {
+  for (const key of FRAUD_THRESHOLD_KEYS) {
+    const val = properties[key];
+    if (val === undefined || val === null || val === "") continue;
+    const num = Number(val);
+    if (Number.isFinite(num) && num >= 0 && num <= 1) return num;
+  }
+  return DEFAULT_FRAUD_THRESHOLD;
+}
+
 // Fraud visual constants
 const FRAUD_COLOR = "#ef4444";       // red-500
 const FRAUD_GLOW = "rgba(239,68,68,0.35)";
@@ -114,23 +126,23 @@ export function GraphView() {
 
   const selectedNode = useMemo(() => {
     if (!data || !selectedNodeId) return null;
-    return data.nodes.find((node) => node.id === selectedNodeId) ?? null;
+    return data.nodes.find((node) => String(node.id) === selectedNodeId) ?? null;
   }, [data, selectedNodeId]);
 
   const relatedNodes = useMemo(() => {
     if (!graphData || !selectedNodeId) return [];
-    const nodeById = new Map(graphData.nodes.map((node) => [node.id, node]));
+    const nodeById = new Map(graphData.nodes.map((node) => [String(node.id), node]));
 
     return graphData.links
       .map((link) => {
-        if (link.source === selectedNodeId) {
-          const node = nodeById.get(link.target);
+        if (String(link.source) === selectedNodeId) {
+          const node = nodeById.get(String(link.target));
           return node
             ? { node, relationshipType: link.type, direction: "out" as const }
             : null;
         }
-        if (link.target === selectedNodeId) {
-          const node = nodeById.get(link.source);
+        if (String(link.target) === selectedNodeId) {
+          const node = nodeById.get(String(link.source));
           return node
             ? { node, relationshipType: link.type, direction: "in" as const }
             : null;
@@ -163,7 +175,7 @@ export function GraphView() {
       const y = node.y ?? 0;
       const fraudStatus = getFraudStatus(node.properties);
       const isTransaction = fraudStatus !== "unknown";
-      const isSelected = node.id === selectedNodeId;
+      const isSelected = String(node.id) === selectedNodeId;
 
       // Transaction nodes are larger for emphasis
       const r = isTransaction ? 8 : 5;
@@ -277,8 +289,8 @@ export function GraphView() {
 
   // Click handler
   const handleNodeClick = useCallback((node: ForceNode) => {
-    setSelectedNodeId(node.id === selectedNodeId ? null : node.id);
-  }, [selectedNodeId, setSelectedNodeId]);
+    setSelectedNodeId(String(node.id));
+  }, [setSelectedNodeId]);
 
   // Pointer area paint — defines the clickable hit zone for each node.
   // Required when using custom nodeCanvasObject, otherwise clicks won't register.
@@ -400,5 +412,13 @@ function Legend({
 }
 
 // Export fraud helpers for use in FraudStatsBar
-export { getFraudStatus, getFraudScore, FRAUD_FLAG_KEYS, FRAUD_SCORE_KEY };
+export {
+  getFraudStatus,
+  getFraudScore,
+  getInferenceThreshold,
+  FRAUD_FLAG_KEYS,
+  FRAUD_SCORE_KEY,
+  FRAUD_THRESHOLD_KEYS,
+  DEFAULT_FRAUD_THRESHOLD,
+};
 export type { FraudStatus };

@@ -1,13 +1,14 @@
 import { useMemo } from "react";
 import { useQueryStore } from "../../store/queryStore";
 import type { GraphNode } from "../../types";
-import { getFraudScore, getFraudStatus } from "./GraphView";
+import { getFraudScore, getFraudStatus, getInferenceThreshold } from "./GraphView";
 import type { FraudStatus } from "./GraphView";
 
 type SuspiciousNode = {
   node: GraphNode;
   status: FraudStatus;
   score: number | null;
+  threshold: number;
   amount: string | null;
   displayId: string;
 };
@@ -32,6 +33,7 @@ export function SuspiciousTransactionsPanel() {
           node,
           status,
           score,
+          threshold: getInferenceThreshold(node.properties),
           amount: getAmount(node.properties),
           displayId: getDisplayId(node),
         };
@@ -70,12 +72,13 @@ export function SuspiciousTransactionsPanel() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ node, status, score, amount, displayId }) => {
-              const selected = node.id === selectedNodeId;
+            {rows.map(({ node, status, score, threshold, amount, displayId }) => {
+              const selected = String(node.id) === selectedNodeId;
+              const scoreMeetsThreshold = score !== null && score >= threshold;
               return (
                 <tr
                   key={node.id}
-                  onClick={() => setSelectedNodeId(selected ? null : node.id)}
+                  onClick={() => setSelectedNodeId(String(node.id))}
                   className={`cursor-pointer border-t border-slate-900 transition ${
                     selected
                       ? "bg-emerald-950/50"
@@ -91,7 +94,16 @@ export function SuspiciousTransactionsPanel() {
                     </div>
                     <div className="text-[10px] text-slate-500">{node.label}</div>
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-slate-300">
+                  <td
+                    className={`px-3 py-1.5 text-right font-mono ${
+                      score === null
+                        ? "text-slate-300"
+                        : scoreMeetsThreshold
+                          ? "text-red-300"
+                          : "text-emerald-300"
+                    }`}
+                    title={`Threshold ${(threshold * 100).toFixed(1)}%`}
+                  >
                     {score === null ? "-" : `${(score * 100).toFixed(1)}%`}
                   </td>
                   <td className="px-3 py-1.5 text-right font-mono text-slate-300">

@@ -23,6 +23,7 @@ export interface DatasetMeta {
   hasModel?: boolean;
   modelPath?: string;
   activeModelPath?: string;
+  inferenceThreshold?: number | null;
   trainedAt?: string;
   trainingMetrics?: Record<string, unknown>;
   builtAt: string;
@@ -83,7 +84,9 @@ export class DatasetMetaService {
     const schema: FullSchema = {
       node_id: 'node_id',
       relation_cols: config?.relationCols ?? [],
+      rel_hetero: config?.relHetero ?? config?.relationCols ?? [],
       feature_cols: config?.featureCols ?? [],
+      feature_hetero: config?.featureHetero ?? config?.featureCols ?? [],
       encoded_feature_cols: config?.encodedFeatureCols ?? [],
       encoding_hints: (config?.encodingHints as any) ?? {},
       encoding_maps: encodingMap?.maps ?? {},
@@ -102,6 +105,10 @@ export class DatasetMetaService {
       schema,
       hasModel: dataset.hasModel,
       activeModelPath: dataset.activeModelPath,
+      inferenceThreshold:
+        typeof (dataset as any).inferenceThreshold === 'number'
+          ? (dataset as any).inferenceThreshold
+          : null,
       trainingMetrics: dataset.trainingMetrics,
       builtAt: (dataset as any).createdAt?.toISOString?.() ?? new Date().toISOString(),
     };
@@ -120,13 +127,16 @@ export class DatasetMetaService {
       columns: meta.columns,
       hasModel: meta.hasModel ?? false,
       activeModelPath: meta.activeModelPath,
+      inferenceThreshold: meta.inferenceThreshold ?? null,
       trainingMetrics: meta.trainingMetrics,
     });
 
     // 2. Save pipeline config (without encoding_maps)
     await this.pipelineConfigService.save(db, {
       relationCols: meta.schema.relation_cols,
+      relHetero: meta.schema.rel_hetero,
       featureCols: meta.schema.feature_cols,
+      featureHetero: meta.schema.feature_hetero,
       encodedFeatureCols: meta.schema.encoded_feature_cols,
       encodingHints: meta.schema.encoding_hints,
       trainRatio: meta.schema.train_ratio,

@@ -32,6 +32,10 @@ export class Dataset {
   @Prop()
   activeModelPath!: string;
 
+  /** Threshold đã tune khi train, dùng lại cho append inference */
+  @Prop({ type: Number, default: null })
+  inferenceThreshold!: number | null;
+
   /** Kết quả training (F1, AUC...) */
   @Prop({ type: Object })
   trainingMetrics!: Record<string, unknown>;

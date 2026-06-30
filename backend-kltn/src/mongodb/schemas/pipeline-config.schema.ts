@@ -12,9 +12,17 @@ export class PipelineConfig {
   @Prop({ type: [String], default: [] })
   relationCols!: string[];
 
+  /** Neo4j heterogeneous relation columns */
+  @Prop({ type: [String], default: [] })
+  relHetero!: string[];
+
   /** Cột nào là feature (amt, lat, long...) */
   @Prop({ type: [String], default: [] })
   featureCols!: string[];
+
+  /** Neo4j Transaction property columns */
+  @Prop({ type: [String], default: [] })
+  featureHetero!: string[];
 
   /** Tên cột sau encoding (dùng cho data.pt) */
   @Prop({ type: [String], default: [] })

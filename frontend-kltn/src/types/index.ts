@@ -142,14 +142,18 @@ export type EncodingHint = {
 export type CsvSchemaConfig = {
   node_id: string | null;
   relation_cols: string[];
+  rel_hetero: string[];
   feature: string[];
+  feature_hetero: string[];
   encoding_hints: Record<string, EncodingHint>;
 };
 
 export type Csv2GraphFullSchema = {
   node_id: string;
   relation_cols: string[];
+  rel_hetero: string[];
   feature_cols: string[];
+  feature_hetero: string[];
   encoded_feature_cols: string[];
   encoding_hints: Record<string, EncodingHint>;
   target_label: string;

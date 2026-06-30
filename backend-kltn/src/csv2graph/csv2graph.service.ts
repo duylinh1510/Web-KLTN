@@ -43,6 +43,12 @@ import {
 @Injectable()
 export class Csv2GraphService {
   private readonly logger = new Logger(Csv2GraphService.name);
+  private readonly inferencePropertyCols = [
+    'fraud_score',
+    'inference_threshold',
+    'is_inferred',
+    'ingest_job_id',
+  ] as const;
 
   constructor(
     private readonly config: ConfigService,
@@ -205,6 +211,9 @@ export class Csv2GraphService {
     const rawFeatureCols = classification.feature.filter(
       (c) => rawRows.length > 0 && c in rawRows[0],
     );
+    const heteroFeatureCols = classification.feature_hetero.filter(
+      (c) => rawRows.length > 0 && c in rawRows[0],
+    );
 
     // Lưu _raw_<database>.json — nguồn sự thật duy nhất cho append validation.
     // headers = tên cột GỐC (chưa rename), originalIdCol = cột user chọn làm ID.
@@ -239,7 +248,9 @@ export class Csv2GraphService {
     const fullSchema: FullSchema = {
       node_id: ensured.nodeIdCol,
       relation_cols: classification.relation_cols,
+      rel_hetero: classification.rel_hetero,
       feature_cols: rawFeatureCols,
+      feature_hetero: heteroFeatureCols,
       encoded_feature_cols: encodedFeatureCols,
       encoding_hints: classification.encoding_hints,
       encoding_maps: encodingMaps,        // Target/Frequency Encoding maps
@@ -254,7 +265,7 @@ export class Csv2GraphService {
       jobDir,
       rawRows,
       ensured.nodeIdCol,
-      rawFeatureCols,
+      heteroFeatureCols,
       targetLabel || null,  // null = không ghi cột target
     );
     const edgesCsvPath = this.csvOutput.writeEdgesCsv(jobDir, edges);
@@ -315,11 +326,11 @@ export class Csv2GraphService {
         rawRows,
         edges,
         ensured.nodeIdCol,
-        rawFeatureCols,
+        heteroFeatureCols,
         targetLabel,
         nodeLabel,
         false,  // isAppend=false → dùng CREATE (nhanh hơn MERGE khi DB rỗng)
-        classification.relation_cols,
+        classification.rel_hetero,
       );
       stats.ingested = ingested;
       this.logger.log(
@@ -332,7 +343,7 @@ export class Csv2GraphService {
     if (ingestNeo4j) {
       const canonicalColumns = [
         ensured.nodeIdCol,
-        ...rawFeatureCols,
+        ...heteroFeatureCols,
         ...(targetLabel ? [targetLabel] : []),
       ];
       const pretrainedModelPath = pretrained?.activeModelPath;
@@ -347,6 +358,7 @@ export class Csv2GraphService {
         hasModel: training?.success === true || pretrained?.success === true,
         modelPath: training?.modelPath ?? pretrainedModelPath,
         activeModelPath,
+        inferenceThreshold: training?.threshold ?? null,
         trainedAt: training ? new Date().toISOString() : undefined,
         trainingMetrics: training?.metrics,
         builtAt: new Date().toISOString(),
@@ -500,6 +512,16 @@ export class Csv2GraphService {
     const rawFeatureCols = meta.schema.feature_cols.filter(
       (c) => rawRows.length > 0 && c in rawRows[0],
     );
+    const heteroFeatureSource = Array.isArray((meta.schema as any).feature_hetero)
+      ? meta.schema.feature_hetero
+      : meta.schema.feature_cols;
+    const heteroFeatureCols = heteroFeatureSource.filter(
+      (c) => rawRows.length > 0 && c in rawRows[0],
+    );
+    let neo4jFeatureCols = heteroFeatureCols;
+    const heteroRelationCols = Array.isArray((meta.schema as any).rel_hetero)
+      ? meta.schema.rel_hetero
+      : meta.schema.relation_cols;
 
     // ── [3.5/6] Kiểm tra ID trùng với dữ liệu đã có trên Neo4j ──
     this.logger.log('[3.5/6] Checking duplicate node_ids against Neo4j...');
@@ -538,7 +560,7 @@ export class Csv2GraphService {
       jobDir,
       rawRows,
       ensured.nodeIdCol,
-      rawFeatureCols,
+      heteroFeatureCols,
       targetLabel || null,
     );
     const edgesCsvPath = this.csvOutput.writeEdgesCsv(jobDir, edges);
@@ -578,13 +600,26 @@ export class Csv2GraphService {
       const { dataPtPath } = await this.dataPt.buildDataPt(jobDir, 'inference');
       files.dataPt = dataPtPath;
 
-      const prediction = await this.gnnInference.predictDataPt(dataPtPath);
-      this.applyInferenceLabels(rawRows, prediction.scores, targetLabel);
+      const prediction = await this.gnnInference.predictDataPt(
+        dataPtPath,
+        this.resolveInferenceThreshold(meta),
+      );
+      this.applyInferenceLabels(
+        rawRows,
+        prediction.scores,
+        targetLabel,
+        jobId,
+        prediction.threshold,
+      );
+      neo4jFeatureCols = this.withUniqueColumns(
+        heteroFeatureCols,
+        this.inferencePropertyCols,
+      );
       this.csvOutput.writeNodesCsv(
         jobDir,
         rawRows,
         ensured.nodeIdCol,
-        rawFeatureCols,
+        neo4jFeatureCols,
         targetLabel,
       );
 
@@ -616,11 +651,11 @@ export class Csv2GraphService {
         rawRows,
         edges,
         ensured.nodeIdCol,
-        rawFeatureCols,
+        neo4jFeatureCols,
         targetLabel,
         nodeLabel,
         true,   // isAppend=true → dùng MERGE (upsert an toàn)
-        meta.schema.relation_cols,
+        heteroRelationCols,
       );
       stats.ingested = ingested;
       this.logger.log(
@@ -686,6 +721,14 @@ export class Csv2GraphService {
             ? (parsed.encoding_hints as any)
             : {},
       };
+      if ('rel_hetero' in parsed) {
+        schema.rel_hetero = this.schemaLlm.flattenToStrings(parsed.rel_hetero);
+      }
+      if ('feature_hetero' in parsed) {
+        schema.feature_hetero = this.schemaLlm.flattenToStrings(
+          parsed.feature_hetero,
+        );
+      }
 
       return this.schemaLlm.enforceRules(
         schema,
@@ -704,22 +747,36 @@ export class Csv2GraphService {
 
   private applyInferenceLabels(
     rows: CsvRow[],
-    scores: { nodeId: string; predictedLabel: number }[],
+    scores: { nodeId: string; fraudScore?: number; predictedLabel: number }[],
     targetLabel: string,
+    jobId?: string,
+    threshold?: number,
   ): void {
     const byNodeId = new Map(
-      scores.map((s) => [String(s.nodeId), Number(s.predictedLabel)]),
+      scores.map((s) => [String(s.nodeId), s]),
     );
     let missing = 0;
 
     for (const row of rows) {
       const nodeId = String((row as Record<string, unknown>)['node_id'] ?? '');
-      const predicted = byNodeId.get(nodeId);
-      if (predicted === undefined) {
+      const score = byNodeId.get(nodeId);
+      if (!score) {
         missing++;
         continue;
       }
+      const predicted = Number(score.predictedLabel);
+      const fraudScore = Number(score.fraudScore);
       row[targetLabel] = predicted === 1 ? 1 : 0;
+      if (Number.isFinite(fraudScore)) {
+        row.fraud_score = fraudScore;
+      }
+      if (Number.isFinite(threshold)) {
+        row.inference_threshold = threshold;
+      }
+      row.is_inferred = true;
+      if (jobId) {
+        row.ingest_job_id = jobId;
+      }
     }
 
     if (missing > 0) {
@@ -728,6 +785,41 @@ export class Csv2GraphService {
         HttpStatus.BAD_GATEWAY,
       );
     }
+  }
+
+  private withUniqueColumns(
+    columns: string[],
+    extraColumns: readonly string[],
+  ): string[] {
+    const seen = new Set(columns);
+    const out = [...columns];
+    for (const col of extraColumns) {
+      if (seen.has(col)) continue;
+      seen.add(col);
+      out.push(col);
+    }
+    return out;
+  }
+
+  private resolveInferenceThreshold(meta: DatasetMeta): number | undefined {
+    if (typeof meta.inferenceThreshold === 'number') {
+      return meta.inferenceThreshold;
+    }
+
+    const configured = this.config.get<string>('GNN_PRETRAINED_THRESHOLD');
+    if (!configured || configured.trim() === '') {
+      return undefined;
+    }
+
+    const threshold = Number(configured);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      this.logger.warn(
+        `Ignore invalid GNN_PRETRAINED_THRESHOLD='${configured}'. Expected number in [0, 1].`,
+      );
+      return undefined;
+    }
+
+    return threshold;
   }
 
   private countPresentTargetValues(rows: CsvRow[], targetLabel: string): number {

@@ -36,8 +36,12 @@ export function SchemaReviewPanel({
   onChange,
 }: Props) {
   const target = targetLabel?.trim() ?? "";
-  const excludedCount = Math.max(
+  const homoExcludedCount = Math.max(
     headers.length - schema.relation_cols.length - schema.feature.length,
+    0,
+  );
+  const neo4jExcludedCount = Math.max(
+    headers.length - schema.rel_hetero.length - schema.feature_hetero.length,
     0,
   );
   const idOptions = Array.from(
@@ -58,11 +62,13 @@ export function SchemaReviewPanel({
       node_id: nodeId,
       relation_cols: schema.relation_cols.filter((c) => c !== nodeId),
       feature: schema.feature.filter((c) => c !== nodeId),
+      rel_hetero: schema.rel_hetero.filter((c) => c !== nodeId),
+      feature_hetero: schema.feature_hetero.filter((c) => c !== nodeId),
       encoding_hints: hints,
     });
   };
 
-  const setRole = (col: string, role: ColumnRole) => {
+  const setHomoRole = (col: string, role: ColumnRole) => {
     const hints = { ...schema.encoding_hints };
     let relationCols = schema.relation_cols.filter((c) => c !== col);
     let feature = schema.feature.filter((c) => c !== col);
@@ -82,6 +88,23 @@ export function SchemaReviewPanel({
       relation_cols: relationCols,
       feature,
       encoding_hints: hints,
+    });
+  };
+
+  const setNeo4jRole = (col: string, role: ColumnRole) => {
+    let relHetero = schema.rel_hetero.filter((c) => c !== col);
+    let featureHetero = schema.feature_hetero.filter((c) => c !== col);
+
+    if (role === "relation") {
+      relHetero = [...relHetero, col];
+    } else if (role === "feature") {
+      featureHetero = [...featureHetero, col];
+    }
+
+    onChange({
+      ...schema,
+      rel_hetero: relHetero,
+      feature_hetero: featureHetero,
     });
   };
 
@@ -141,9 +164,12 @@ export function SchemaReviewPanel({
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-1.5 text-[10px]">
-          <CountBadge label="Relation" value={schema.relation_cols.length} />
-          <CountBadge label="Feature" value={schema.feature.length} />
-          <CountBadge label="Exclude" value={excludedCount} muted />
+          <CountBadge label="Homo Relation" value={schema.relation_cols.length} />
+          <CountBadge label="Homo Feature" value={schema.feature.length} />
+          <CountBadge label="Neo4j Relation" value={schema.rel_hetero.length} />
+          <CountBadge label="Neo4j Feature" value={schema.feature_hetero.length} />
+          <CountBadge label="Homo Exclude" value={homoExcludedCount} muted />
+          <CountBadge label="Neo4j Exclude" value={neo4jExcludedCount} muted />
         </div>
       </div>
 
@@ -171,13 +197,16 @@ export function SchemaReviewPanel({
         <table className="w-full border-separate border-spacing-0 text-left text-[11px]">
           <thead className="sticky top-0 z-10 bg-slate-900/95 text-[10px] uppercase tracking-wide text-slate-400">
             <tr>
-              <th className="w-[42%] border-b border-slate-800 px-3 py-2 font-semibold">
+              <th className="w-[34%] border-b border-slate-800 px-3 py-2 font-semibold">
                 CỘT
               </th>
-              <th className="w-[27%] border-b border-slate-800 px-3 py-2 font-semibold">
-                ROLE
+              <th className="w-[20%] border-b border-slate-800 px-3 py-2 font-semibold">
+                HOMO ROLE
               </th>
-              <th className="w-[31%] border-b border-slate-800 px-3 py-2 font-semibold">
+              <th className="w-[20%] border-b border-slate-800 px-3 py-2 font-semibold">
+                NEO4J ROLE
+              </th>
+              <th className="w-[26%] border-b border-slate-800 px-3 py-2 font-semibold">
                 ENCODE
               </th>
             </tr>
@@ -186,7 +215,10 @@ export function SchemaReviewPanel({
             {headers.map((col) => {
               const isTarget = !!target && col === target;
               const isNodeId = schema.node_id === col;
-              const role = isTarget || isNodeId ? "exclude" : getRole(schema, col);
+              const homoRole =
+                isTarget || isNodeId ? "exclude" : getHomoRole(schema, col);
+              const neo4jRole =
+                isTarget || isNodeId ? "exclude" : getNeo4jRole(schema, col);
               const hint = schema.encoding_hints[col];
               return (
                 <tr key={col} className="group border-b border-slate-800/80 transition hover:bg-slate-900/60">
@@ -203,18 +235,18 @@ export function SchemaReviewPanel({
                         ? "Cột nhãn"
                         : isNodeId
                           ? "Định danh giao dịch"
-                          : role === "relation"
+                          : homoRole === "relation" || neo4jRole === "relation"
                             ? "Tạo node/quan hệ"
-                            : role === "feature"
+                            : homoRole === "feature" || neo4jRole === "feature"
                               ? "Đưa vào feature vector"
                               : "Không dùng"}
                     </div>
                   </td>
                   <td className="border-b border-slate-800/70 px-3 py-2 align-top">
                     <select
-                      value={role}
+                      value={homoRole}
                       onChange={(event) =>
-                        setRole(col, event.target.value as ColumnRole)
+                        setHomoRole(col, event.target.value as ColumnRole)
                       }
                       disabled={disabled || isTarget || isNodeId}
                       className={selectCls()}
@@ -225,7 +257,21 @@ export function SchemaReviewPanel({
                     </select>
                   </td>
                   <td className="border-b border-slate-800/70 px-3 py-2 align-top">
-                    {role === "feature" ? (
+                    <select
+                      value={neo4jRole}
+                      onChange={(event) =>
+                        setNeo4jRole(col, event.target.value as ColumnRole)
+                      }
+                      disabled={disabled || isTarget || isNodeId}
+                      className={selectCls()}
+                    >
+                      <option value="exclude">Exclude</option>
+                      <option value="relation">Relation</option>
+                      <option value="feature">Feature</option>
+                    </select>
+                  </td>
+                  <td className="border-b border-slate-800/70 px-3 py-2 align-top">
+                    {homoRole === "feature" ? (
                       <div className="grid gap-1.5">
                         <select
                           value={hint?.type ?? "target"}
@@ -283,9 +329,15 @@ export function SchemaReviewPanel({
   );
 }
 
-function getRole(schema: CsvSchemaConfig, col: string): ColumnRole {
+function getHomoRole(schema: CsvSchemaConfig, col: string): ColumnRole {
   if (schema.relation_cols.includes(col)) return "relation";
   if (schema.feature.includes(col)) return "feature";
+  return "exclude";
+}
+
+function getNeo4jRole(schema: CsvSchemaConfig, col: string): ColumnRole {
+  if (schema.rel_hetero.includes(col)) return "relation";
+  if (schema.feature_hetero.includes(col)) return "feature";
   return "exclude";
 }
 

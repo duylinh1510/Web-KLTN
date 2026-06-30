@@ -71,4 +71,43 @@ describe('Text2CypherService selfCorrectionLoop', () => {
     expect(executeCypherExplain).toHaveBeenCalledTimes(4);
     expect(callColabCorrect).toHaveBeenCalledTimes(3);
   });
+
+  it('rewrites graph visualization queries to return relationship objects', () => {
+    const cypher = `
+      MATCH (t:Transaction)-[r]->(shared)
+      WHERE toString(t.is_fraud) = "1"
+        AND (shared:MerchantNode OR shared:CategoryNode)
+      WITH shared, collect(DISTINCT t) AS txs
+      WHERE size(txs) >= 3
+      UNWIND txs AS t
+      MATCH (t)-[r]->(shared)
+      RETURN t
+      LIMIT 100
+    `;
+
+    const result = (service as any).rewriteGraphVisualizationReturn(
+      'Find fraud transactions that are connected through the same merchant, category, return the shared entity nodes with all relationship objects so the graph can show suspicious clusters.',
+      cypher,
+    );
+
+    expect(result).toContain('RETURN t, r, shared');
+    expect(result).toContain('LIMIT 100');
+  });
+
+  it('does not rewrite aggregate table queries', () => {
+    const cypher = `
+      MATCH (t:Transaction)-[:HAS_MERCHANT]->(m:MerchantNode)
+      WHERE toString(t.is_fraud) = "1"
+      RETURN m.value AS merchant, COUNT(t) AS fraud_count
+      ORDER BY fraud_count DESC
+      LIMIT 5
+    `;
+
+    const result = (service as any).rewriteGraphVisualizationReturn(
+      'List the top 5 merchants with the most fraud transactions',
+      cypher,
+    );
+
+    expect(result).toBe(cypher);
+  });
 });

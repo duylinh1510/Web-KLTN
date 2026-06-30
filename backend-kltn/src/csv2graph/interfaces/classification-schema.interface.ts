@@ -15,18 +15,22 @@ export interface EncodingHint {
 export interface ClassificationSchema {
   node_id: string | null;
   relation_cols: string[];
+  rel_hetero: string[];
   feature: string[];
+  feature_hetero: string[];
   encoding_hints: Record<string, EncodingHint>;
 }
 
 export interface FullSchema {
   node_id: string;
   relation_cols: string[];
+  rel_hetero: string[];
   /**
    * RAW feature column names (giống tên trong CSV input).
    * Dùng cho nodes.csv (raw values) và Neo4j ingest properties.
-   */
+  */
   feature_cols: string[];
+  feature_hetero: string[];
   /**
    * ENCODED feature column names sau Target/Frequency Encoding.
    * Số lượng cột bằng feature_cols.length (không phình chiều như one-hot).

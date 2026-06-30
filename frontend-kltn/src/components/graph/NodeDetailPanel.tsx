@@ -1,5 +1,5 @@
 import type { GraphNode } from "../../types";
-import { getFraudScore, getFraudStatus } from "./GraphView";
+import { getFraudScore, getFraudStatus, getInferenceThreshold } from "./GraphView";
 
 type RelatedNode = {
   node: GraphNode;
@@ -28,6 +28,10 @@ const PRIORITY_FIELDS = [
   "predictedLabel",
   "fraud_score",
   "fraudScore",
+  "inference_threshold",
+  "inferenceThreshold",
+  "is_inferred",
+  "ingest_job_id",
 ];
 
 export function NodeDetailPanel({
@@ -37,9 +41,21 @@ export function NodeDetailPanel({
 }: Props) {
   const fraudStatus = getFraudStatus(node.properties);
   const fraudScore = getFraudScore(node.properties);
+  const inferenceThreshold = getInferenceThreshold(node.properties);
+  const scoreMeetsThreshold =
+    fraudScore !== null && fraudScore >= inferenceThreshold;
   const entries = sortEntries(Object.entries(node.properties ?? {}));
   const isInvestigationNode =
     fraudStatus !== "unknown" || /transaction|payment|order/i.test(node.label);
+  const showInferenceSummary =
+    isInvestigationNode ||
+    fraudScore !== null ||
+    hasAnyProperty(node.properties, [
+      "inference_threshold",
+      "inferenceThreshold",
+      "is_inferred",
+      "ingest_job_id",
+    ]);
   const title = isInvestigationNode ? "Hồ sơ giao dịch" : "Chi tiết thực thể";
   const displayId = formatValue(
     node.properties.node_id ??
@@ -51,10 +67,10 @@ export function NodeDetailPanel({
   return (
     <div
       data-node-detail-panel
-      className="absolute bottom-2 left-2 z-10 flex min-h-[280px] min-w-[460px] max-h-[calc(100%-16px)] max-w-[calc(100%-16px)] resize flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900/95 shadow-2xl backdrop-blur-md animate-slide-up"
+      className="fixed bottom-4 right-4 z-50 flex min-h-[280px] min-w-[460px] max-h-[calc(100vh-32px)] max-w-[calc(100vw-32px)] resize flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900/95 shadow-2xl backdrop-blur-md animate-slide-up"
       style={{
-        width: "min(720px, calc(100% - 16px))",
-        height: "min(540px, calc(100% - 16px))",
+        width: "min(720px, calc(100vw - 32px))",
+        height: "min(540px, calc(100vh - 32px))",
       }}
     >
       <div className="flex items-center justify-between gap-2 border-b border-slate-700 px-3 py-2">
@@ -81,8 +97,8 @@ export function NodeDetailPanel({
                 "[data-node-detail-panel]",
               ) as HTMLElement | null;
               if (!panel) return;
-              panel.style.width = "min(720px, calc(100% - 16px))";
-              panel.style.height = "min(540px, calc(100% - 16px))";
+              panel.style.width = "min(720px, calc(100vw - 32px))";
+              panel.style.height = "min(540px, calc(100vh - 32px))";
             }}
             className="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
             title="Đưa hồ sơ về kích thước mặc định"
@@ -103,9 +119,10 @@ export function NodeDetailPanel({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(210px,0.9fr)_minmax(230px,1.1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(260px,1.2fr)_minmax(180px,0.8fr)]">
         <div className="flex min-h-0 flex-col border-r border-slate-700">
-          <div className="border-b border-slate-700 px-3 py-2">
+          {showInferenceSummary && (
+            <div className="border-b border-slate-700 px-3 py-2">
             <div className="grid grid-cols-2 gap-2 text-[10px]">
               <SummaryItem
                 label="Trạng thái"
@@ -121,10 +138,16 @@ export function NodeDetailPanel({
               <SummaryItem
                 label="Fraud score"
                 value={fraudScore === null ? "-" : `${(fraudScore * 100).toFixed(1)}%`}
-                tone={fraudScore !== null && fraudScore >= 0.5 ? "fraud" : "legit"}
+                tone={scoreMeetsThreshold ? "fraud" : "legit"}
+              />
+              <SummaryItem
+                label="Threshold"
+                value={`${(inferenceThreshold * 100).toFixed(1)}%`}
+                tone={scoreMeetsThreshold ? "fraud" : "legit"}
               />
             </div>
-          </div>
+            </div>
+          )}
 
           {fraudScore !== null && (
             <div className="border-b border-slate-700 px-3 py-2">
@@ -132,30 +155,50 @@ export function NodeDetailPanel({
                 <span className="font-medium text-slate-400">Mức nghi vấn</span>
                 <span
                   className={`font-bold ${
-                    fraudScore >= 0.5 ? "text-red-400" : "text-green-400"
+                    scoreMeetsThreshold ? "text-red-400" : "text-green-400"
                   }`}
                 >
                   {(fraudScore * 100).toFixed(1)}%
                 </span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+              <div className="relative h-2 w-full rounded-full bg-slate-800">
                 <div
                   className="h-full rounded-full transition-all duration-500"
                   style={{
                     width: `${Math.min(fraudScore * 100, 100)}%`,
                     background:
-                      fraudScore >= 0.5
+                      scoreMeetsThreshold
                         ? "linear-gradient(90deg, #f97316, #ef4444)"
                         : "linear-gradient(90deg, #22c55e, #4ade80)",
                   }}
                 />
+                <span
+                  className="absolute top-[-2px] h-3 w-0.5 rounded bg-slate-200/80"
+                  style={{
+                    left: `calc(${Math.min(inferenceThreshold * 100, 100)}% - 1px)`,
+                  }}
+                  title={`Threshold ${(inferenceThreshold * 100).toFixed(1)}%`}
+                />
+              </div>
+              <div className="mt-1 text-right text-[9px] text-slate-500">
+                Threshold {(inferenceThreshold * 100).toFixed(1)}%
               </div>
             </div>
           )}
 
-          <div className="flex-1 overflow-auto px-1 py-1">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 px-3 py-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                {isInvestigationNode ? "Transaction properties" : "Entity properties"}
+              </div>
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-medium text-slate-400">
+                {entries.length}
+              </span>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto px-1 py-1">
             {entries.length > 0 ? (
-              <table className="w-full text-[11px]">
+              <table className="w-full table-fixed text-[11px]">
                 <tbody>
                   {entries.map(([key, value]) => {
                     const isFraudKey = isFraudField(key);
@@ -172,7 +215,7 @@ export function NodeDetailPanel({
                         }`}
                       >
                         <td
-                          className={`px-2 py-1.5 font-medium ${
+                          className={`w-[42%] px-2 py-1.5 align-top font-medium ${
                             isFraudKey
                               ? "text-red-300"
                               : isPriority
@@ -180,9 +223,9 @@ export function NodeDetailPanel({
                                 : "text-slate-400"
                           }`}
                         >
-                          {key}
+                          <span className="break-all">{key}</span>
                         </td>
-                        <td className="break-all px-2 py-1.5 text-right text-slate-200">
+                        <td className="break-all px-2 py-1.5 text-right align-top text-slate-200">
                           {formatValue(value)}
                         </td>
                       </tr>
@@ -194,7 +237,8 @@ export function NodeDetailPanel({
               <div className="px-3 py-4 text-center text-[11px] text-slate-500">
                 Không có properties.
               </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 
@@ -325,6 +369,16 @@ function isFraudField(key: string): boolean {
     "fraud_score",
     "fraudScore",
   ].includes(key);
+}
+
+function hasAnyProperty(
+  properties: Record<string, unknown>,
+  keys: string[],
+): boolean {
+  return keys.some((key) => {
+    const value = properties[key];
+    return value !== null && value !== undefined && value !== "";
+  });
 }
 
 function getRelatedLabel(node: GraphNode): string {

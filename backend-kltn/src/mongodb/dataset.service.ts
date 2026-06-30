@@ -48,6 +48,7 @@ export class DatasetService {
     info: {
       hasModel: boolean;
       activeModelPath?: string;
+      inferenceThreshold?: number | null;
       trainingMetrics?: Record<string, unknown>;
     },
   ): Promise<void> {
