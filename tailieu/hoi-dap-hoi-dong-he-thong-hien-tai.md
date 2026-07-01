@@ -204,7 +204,7 @@ Dạ, đồ thị hình sao là cách biểu diễn trong đó một giao dịch
 
 Cách gọi "hình sao" xuất phát từ việc khi vẽ ra, một đỉnh trung tâm có nhiều nhánh tỏa ra xung quanh.
 
-## 5. F-GNN và tệp `data.pt`
+## 5. F-GNN và dữ liệu cho mô hình
 
 ### 31. F-GNN là gì?
 
@@ -212,23 +212,22 @@ Dạ, F-GNN là mô hình mạng nơ-ron đồ thị dùng cho bài toán phát 
 
 Trong bài toán này, điều đó có ý nghĩa vì gian lận thường xuất hiện theo nhóm hoặc theo mẫu quan hệ, chứ không phải lúc nào cũng thể hiện rõ ở một dòng riêng lẻ.
 
-### 32. `data.pt` là gì?
+### 32. Dữ liệu đầu vào cho F-GNN là gì?
 
-Dạ, `data.pt` là tệp dữ liệu đã được chuẩn bị cho mô hình F-GNN. Có thể hiểu đây là phiên bản đã đóng gói của dữ liệu đồ thị sau khi CSV được xử lý.
+Dạ, dữ liệu đầu vào cho F-GNN là dữ liệu CSV sau khi đã được chuyển thành dạng phù hợp cho mô hình học trên đồ thị. Có thể hiểu đơn giản là hệ thống không đưa nguyên tệp CSV thô vào mô hình, mà phải chuẩn bị lại thành dữ liệu gồm thông tin giao dịch và quan hệ giữa các giao dịch.
 
-Trong tệp này có các thông tin như đặc trưng của giao dịch, danh sách các cạnh trong đồ thị, nhãn gian lận nếu có, và phần chia dữ liệu dùng để huấn luyện, kiểm tra trong quá trình đánh giá.
+Sau bước chuẩn bị này, mô hình biết mỗi giao dịch có những thông tin gì, giao dịch nào liên quan đến giao dịch nào, giao dịch nào có nhãn gian lận nếu dữ liệu có nhãn, và phần nào dùng để huấn luyện hoặc kiểm tra.
 
-### 33. Trong `data.pt`, các thành phần chính có ý nghĩa gì?
+### 33. Khi nói dữ liệu đã chuẩn bị cho F-GNN, nên hiểu gồm những gì?
 
 Dạ, có thể giải thích đơn giản như sau:
 
-- `x` là bảng đặc trưng của các giao dịch sau khi đã chuyển thành số.
-- `edge_index` là danh sách các cặp giao dịch có liên hệ với nhau.
-- `y` là nhãn gian lận, nếu bộ dữ liệu có nhãn.
-- `train_mask`, `val_mask`, `test_mask` là cách chia dữ liệu thành phần huấn luyện, phần kiểm tra trong lúc huấn luyện và phần kiểm tra cuối.
-- `y_masked` là nhãn đã được che bớt trong một số kịch bản để tránh mô hình nhìn trực tiếp đáp án.
+- Thứ nhất là đặc trưng của giao dịch, ví dụ số tiền, thời gian, loại giao dịch hoặc các thông tin đã được chuyển thành số.
+- Thứ hai là quan hệ giữa các giao dịch, ví dụ hai giao dịch cùng cửa hàng hoặc cùng loại giao dịch.
+- Thứ ba là nhãn gian lận, nếu bộ dữ liệu có sẵn nhãn để huấn luyện.
+- Thứ tư là cách chia dữ liệu thành phần dùng để học và phần dùng để kiểm tra.
 
-Khi trình bày, không cần đi quá sâu vào mã nguồn. Chỉ cần nói `data.pt` là dữ liệu đồ thị đã được chuẩn hóa cho F-GNN.
+Khi trình bày trước hội đồng, chỉ nên nói đây là "bộ dữ liệu đồ thị đã được chuẩn hóa cho F-GNN", không cần nhắc tên tệp hoặc tên biến nội bộ trong mã nguồn.
 
 ### 34. Khi huấn luyện, mô hình nằm trong thư mục `models` có bị thay thế không?
 
