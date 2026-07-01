@@ -338,15 +338,15 @@ Cách này không làm hệ thống đúng tuyệt đối, nhưng giúp giảm c
 
 Dạ, có thể giải thích dễ hiểu như sau.
 
-`Exact` nghĩa là câu dự đoán trả ra kết quả khớp hoàn toàn với câu đúng.
+`Exact (Match)` Kết quả trả về giống hệt kết quả đúng — cùng nội dung, thường cho phép bỏ qua thứ tự dòng (row order).
 
-`Partial` nghĩa là câu dự đoán đúng một phần quan trọng, nhưng chưa khớp hoàn toàn.
+`Partial (Match)` Kết quả có chồng lấp (overlap) một phần với đáp án đúng nhưng không khớp hoàn toàn — vừa thiếu vừa thừa.
 
-`Ignore Col.` nghĩa là khi so sánh thì tạm bỏ qua khác biệt về tên cột hoặc thứ tự cột, chỉ xem nội dung chính có đúng không.
+`Ignore Col.` Nới lỏng so khớp bằng cách bỏ qua thứ tự cột hoặc tên cột — chỉ cần dữ liệu các cột trùng nhau, không quan tâm cột nào đứng trước/sau (tương tự cách Spider ánh xạ cột để bỏ qua thứ tự).
 
-`Superset` nghĩa là câu dự đoán trả về nhiều hơn kết quả đúng. Nó có chứa phần đúng nhưng bị dư.
+`Superset` Kết quả dự đoán là "tập cha" — chứa toàn bộ đáp án đúng nhưng có thêm dòng/cột thừa không cần thiết.
 
-`Subset` nghĩa là câu dự đoán trả về ít hơn kết quả đúng. Nó đúng một phần nhưng bị thiếu.
+`Subset` Kết quả dự đoán là "tập con" — chỉ đúng một phần, thiếu một số dòng/cột so với đáp án đầy đủ.
 
 Nếu nói trước hội đồng, em có thể nói: các độ đo này giúp đánh giá câu truy vấn sinh ra đúng đến mức nào, không chỉ chấm đúng hoặc sai tuyệt đối.
 
