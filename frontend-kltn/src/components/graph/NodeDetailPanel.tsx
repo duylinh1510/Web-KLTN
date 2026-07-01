@@ -44,7 +44,8 @@ export function NodeDetailPanel({
   const inferenceThreshold = getInferenceThreshold(node.properties);
   const scoreMeetsThreshold =
     fraudScore !== null && fraudScore >= inferenceThreshold;
-  const entries = sortEntries(Object.entries(node.properties ?? {}));
+  const profileProperties = buildProfileProperties(node, relatedNodes);
+  const entries = sortEntries(Object.entries(profileProperties));
   const isInvestigationNode =
     fraudStatus !== "unknown" || /transaction|payment|order/i.test(node.label);
   const showInferenceSummary =
@@ -359,6 +360,38 @@ function sortEntries(entries: [string, unknown][]): [string, unknown][] {
     if (bIndex !== -1) return 1;
     return a.localeCompare(b);
   });
+}
+
+function buildProfileProperties(
+  node: GraphNode,
+  relatedNodes: RelatedNode[],
+): Record<string, unknown> {
+  const properties: Record<string, unknown> = { ...(node.properties ?? {}) };
+  const isTransaction = /transaction|payment|order/i.test(node.label);
+  if (!isTransaction) return properties;
+
+  for (const item of relatedNodes) {
+    const key = relationshipToPropertyKey(item.relationshipType);
+    if (!key || properties[key] !== undefined) continue;
+
+    const value = getRelatedLabel(item.node);
+    if (!value || value === "-") continue;
+
+    properties[key] = value;
+  }
+
+  return properties;
+}
+
+function relationshipToPropertyKey(type: string): string | null {
+  const normalized = type.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized.startsWith("has_")) {
+    return normalized.slice(4);
+  }
+
+  return normalized.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || null;
 }
 
 function isFraudField(key: string): boolean {

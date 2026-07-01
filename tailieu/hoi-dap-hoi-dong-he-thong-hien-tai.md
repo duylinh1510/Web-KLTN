@@ -1,609 +1,580 @@
 # Hỏi đáp hội đồng về hệ thống hiện tại
 
-Tài liệu này dùng để ôn tập trước khi bảo vệ. Nội dung bám theo hệ thống hiện tại trong repository: React frontend, NestJS backend, Neo4j, MongoDB, Python services, F-GNN, CSV2Graph và Text2Cypher.
+Tài liệu này dùng để ôn tập trước khi bảo vệ. Nội dung bám theo hệ thống hiện tại: giao diện người dùng, máy chủ điều phối, Neo4j, MongoDB, các tiến trình Python, F-GNN, CSV2Graph và Text2Cypher.
 
-Mỗi câu trả lời được viết theo hướng có thể nói trực tiếp trước hội đồng: ngắn, rõ ý, không quá sa vào code nhưng vẫn đủ kỹ thuật.
+Cách trả lời trong tài liệu được viết theo kiểu có thể nói trực tiếp trước hội đồng. Các tên riêng như Neo4j, MongoDB, F-GNN, CSV2Graph, Text2Cypher, React, NestJS, Python, Colab và ngrok được giữ nguyên vì đó là tên công nghệ. Phần còn lại cố gắng dùng tiếng Việt và diễn giải dễ hiểu.
 
 ## 1. Câu hỏi tổng quan
 
 ### 1. Hệ thống của em giải quyết bài toán gì?
 
-Hệ thống giải quyết bài toán hỗ trợ phát hiện và phân tích giao dịch gian lận. Người dùng upload dữ liệu giao dịch dạng CSV, hệ thống chuyển dữ liệu thành graph, lưu vào Neo4j, dùng F-GNN để dự đoán fraud và cho phép truy vấn graph bằng ngôn ngữ tự nhiên thông qua Text2Cypher.
+Dạ, hệ thống của em hỗ trợ phát hiện và phân tích giao dịch có dấu hiệu gian lận. Người dùng đưa tệp CSV giao dịch vào hệ thống. Sau đó hệ thống chuyển dữ liệu này thành đồ thị, dùng mô hình F-GNN để chấm điểm nghi ngờ gian lận, lưu dữ liệu vào Neo4j để xem quan hệ, và cho phép người dùng đặt câu hỏi bằng tiếng Việt hoặc tiếng Anh thông qua Text2Cypher.
+
+Nói ngắn gọn, hệ thống không chỉ trả lời câu hỏi "giao dịch nào đáng nghi", mà còn giúp xem "vì sao giao dịch đó đáng nghi" thông qua các mối liên hệ với giao dịch khác.
 
 ### 2. Điểm chính của đề tài là gì?
 
-Điểm chính là xây dựng pipeline end-to-end: từ CSV sang graph, từ graph sang `data.pt` cho F-GNN, import graph vào Neo4j để phân tích, và tích hợp Text2Cypher để người dùng hỏi dữ liệu bằng ngôn ngữ tự nhiên.
+Điểm chính của đề tài là xây dựng một quy trình tương đối đầy đủ từ dữ liệu bảng sang dữ liệu đồ thị. Quy trình gồm: đọc tệp CSV, gợi ý ý nghĩa các cột, chuyển CSV thành đồ thị, tạo dữ liệu cho mô hình F-GNN, đưa dữ liệu vào Neo4j để phân tích, và dùng Text2Cypher để người dùng hỏi dữ liệu bằng ngôn ngữ tự nhiên.
+
+Vì vậy đề tài không dừng ở việc huấn luyện một mô hình, mà kết hợp ba phần: chuẩn bị dữ liệu, dự đoán gian lận và giải thích kết quả bằng quan hệ đồ thị.
 
 ### 3. Vì sao đề tài có ý nghĩa thực tế?
 
-Fraud detection là bài toán thực tế trong tài chính và giao dịch số. Gian lận thường không chỉ nằm ở từng giao dịch riêng lẻ mà còn nằm trong quan hệ giữa các giao dịch. Graph giúp biểu diễn quan hệ đó, GNN giúp học từ cấu trúc quan hệ, còn Neo4j và Text2Cypher giúp phân tích viên truy vấn và giải thích kết quả dễ hơn.
+Dạ, trong giao dịch tài chính, hành vi gian lận thường không đứng riêng lẻ. Một giao dịch có thể đáng nghi vì nó dùng chung người nhận tiền, chung cửa hàng, chung khu vực, chung nghề nghiệp, hoặc có mô hình quan hệ giống các giao dịch gian lận trước đó.
 
-### 4. Hệ thống của em khác gì so với chỉ train một model phân loại CSV?
+Dữ liệu bảng truyền thống nhìn từng dòng khá tốt, nhưng khó thể hiện rõ các mối liên hệ này. Đồ thị giúp biểu diễn quan hệ một cách tự nhiên hơn. Khi kết hợp với F-GNN, hệ thống có thể học từ cả thông tin của giao dịch và thông tin từ các giao dịch liên quan.
 
-Nếu chỉ train model trên CSV, mỗi dòng thường được xử lý tương đối độc lập. Hệ thống của em biến dữ liệu thành graph để khai thác quan hệ như cùng merchant, category, state hoặc job. Ngoài dự đoán fraud, hệ thống còn cho phép người dùng xem cụm giao dịch liên quan trong Neo4j, đây là phần quan trọng cho phân tích và giải thích.
+### 4. Hệ thống khác gì so với chỉ dùng một mô hình phân loại trên CSV?
 
-### 5. Người dùng cuối của hệ thống là ai?
+Nếu chỉ dùng mô hình phân loại trên CSV, mỗi dòng giao dịch thường được xử lý gần như độc lập. Mô hình có thể biết số tiền, thời gian, loại giao dịch, nhưng không nhìn rõ mạng lưới quan hệ giữa các giao dịch.
 
-Người dùng mục tiêu là phân tích viên gian lận hoặc người vận hành dữ liệu. Họ không nhất thiết phải biết Cypher hoặc hiểu chi tiết F-GNN, nhưng có thể upload dữ liệu, xem graph, xem giao dịch nghi vấn và đặt câu hỏi tự nhiên.
+Trong hệ thống của em, CSV được chuyển thành đồ thị. Ví dụ nhiều giao dịch cùng liên quan đến một cửa hàng, một nhóm nghề nghiệp, một khu vực hoặc một loại giao dịch thì hệ thống có thể nối chúng lại. Nhờ đó, ngoài việc dự đoán gian lận, hệ thống còn cho phép phân tích cụm giao dịch nghi vấn. Đây là điểm mà cách làm chỉ dựa trên bảng dữ liệu khó thể hiện trực quan.
 
-### 6. Hệ thống hiện tại có phải production-ready không?
+### 5. Khi thầy cô hỏi "SQL cũng làm được, vậy đồ thị hơn gì?", nên trả lời thế nào?
 
-Chưa. Hệ thống hiện tại là prototype nghiên cứu và demo khóa luận. Một số phần như LLM chạy qua Colab/ngrok, train GNN còn lâu, security chưa đầy đủ và model versioning còn đơn giản. Tuy nhiên kiến trúc đã tách module để có thể nâng cấp sang production sau này.
+Dạ, SQL vẫn có thể làm được nhiều truy vấn quan hệ nếu thiết kế bảng và nối bảng cẩn thận. Điểm khác là với bài toán này, quan hệ giữa các giao dịch là phần trung tâm. Đồ thị giúp biểu diễn trực tiếp các thực thể và mối liên hệ, ví dụ giao dịch nối với người dùng, cửa hàng, khu vực, loại giao dịch, sau đó từ các quan hệ này có thể tìm cụm bất thường hoặc đường liên kết đáng nghi dễ hơn.
 
-## 2. Câu hỏi về kiến trúc tổng thể
+Nếu dùng SQL, cùng một câu hỏi có thể phải nối nhiều bảng và câu truy vấn dài hơn. Với Cypher trên Neo4j, cách hỏi gần với cách mình suy nghĩ về quan hệ hơn: tìm giao dịch, đi theo các quan hệ, lấy ra các giao dịch nằm trong cùng cụm. Ngoài ra, Neo4j còn hỗ trợ hiển thị trực quan các nút và cạnh, nên khi thuyết trình hoặc phân tích nghiệp vụ, hội đồng có thể thấy được mạng lưới giao dịch chứ không chỉ thấy một bảng kết quả.
 
-### 7. Kiến trúc hệ thống gồm những thành phần nào?
+### 6. Câu hỏi nào trong phần ví dụ phù hợp nhất để chứng minh giá trị của Cypher và đồ thị?
 
-Hệ thống gồm React frontend, NestJS backend, Neo4j, MongoDB, Python CSV2Graph sidecar, Python GNN inference service và hai LLM service qua Colab/ngrok cho CSV schema suggestion và Text2Cypher.
+Dạ, câu phù hợp nhất là những câu yêu cầu tìm cụm giao dịch gian lận hoặc tìm các giao dịch có liên hệ gián tiếp qua nhiều thực thể chung. Ví dụ:
 
-### 8. Vì sao chọn kiến trúc tách frontend, backend và Python services?
+> Hãy hiển thị các cụm giao dịch nghi ngờ gian lận có chung cửa hàng, chung loại giao dịch hoặc chung khu vực.
 
-Frontend chỉ xử lý giao diện. Backend NestJS điều phối workflow, validation và metadata. Python services xử lý ML vì hệ sinh thái PyTorch/PyG phù hợp với GNN hơn Node.js. Cách tách này giúp mỗi phần làm đúng vai trò và dễ thay thế, ví dụ sau này có thể đưa Python service lên GPU server.
+Câu này phù hợp vì nó không chỉ lọc từng dòng. Nó yêu cầu nhìn các giao dịch như một mạng lưới. Khi chạy trên Neo4j, hệ thống có thể trả về cả giao dịch, thực thể liên quan và các đường nối giữa chúng. Đây là phần thể hiện rõ ưu điểm của đồ thị so với việc chỉ xem bảng.
 
-### 9. Backend đóng vai trò gì?
+### 7. Người dùng cuối của hệ thống là ai?
 
-Backend là orchestrator trung tâm. Nó nhận request từ frontend, gọi Neo4j, MongoDB, Python services và LLM services. Backend cũng kiểm soát schema, validate CSV, quyết định full build hay append, gọi train/inference và format kết quả graph trả về frontend.
+Người dùng mục tiêu là người phân tích gian lận, người vận hành dữ liệu hoặc người cần kiểm tra các giao dịch đáng nghi. Họ không nhất thiết phải biết viết Cypher, cũng không cần hiểu chi tiết cách huấn luyện F-GNN. Họ có thể đưa dữ liệu vào, xem danh sách giao dịch nghi vấn, bấm vào từng giao dịch để xem thông tin, và đặt câu hỏi bằng ngôn ngữ tự nhiên.
 
-### 10. Frontend có gọi trực tiếp Neo4j không?
+### 8. Hệ thống hiện tại đã sẵn sàng đưa vào vận hành thực tế chưa?
 
-Không. Frontend chỉ gọi API của NestJS backend. Việc không gọi trực tiếp Neo4j giúp backend kiểm soát bảo mật, validation, read-only guard, history và format dữ liệu thống nhất.
+Dạ, chưa. Hệ thống hiện tại là bản nghiên cứu và minh họa cho khóa luận. Một số phần vẫn còn ở mức thử nghiệm, ví dụ mô hình ngôn ngữ lớn đang chạy qua Colab và ngrok, việc huấn luyện có thể mất thời gian, bảo mật chưa đầy đủ như hệ thống sản phẩm thật, và quản lý nhiều phiên bản mô hình còn đơn giản.
 
-### 11. Vì sao dùng MongoDB trong hệ thống?
+Tuy nhiên, kiến trúc đã tách các phần rõ ràng nên có thể phát triển tiếp: giao diện riêng, máy chủ điều phối riêng, tiến trình Python riêng, cơ sở dữ liệu đồ thị riêng và nơi lưu thông tin cấu hình riêng.
 
-MongoDB lưu metadata vận hành, bao gồm dataset metadata, pipeline config, encoding maps, pipeline runs và query history. Neo4j lưu graph nghiệp vụ, còn MongoDB lưu thông tin để backend biết schema canonical, model state, threshold và cách append dữ liệu mới.
+## 2. Kiến trúc hệ thống
 
-### 12. Vì sao vừa dùng Neo4j vừa dùng MongoDB?
+### 9. Kiến trúc hệ thống gồm những phần nào?
 
-Neo4j phù hợp để lưu và truy vấn graph. MongoDB phù hợp để lưu metadata dạng document như schema, encoding map, cấu hình pipeline và lịch sử. Hai database có vai trò khác nhau, không thay thế nhau.
+Dạ, hệ thống gồm năm nhóm chính.
 
-### 13. Nếu chỉ dùng Neo4j để lưu tất cả metadata được không?
+Thứ nhất là giao diện người dùng, được xây bằng React, để người dùng tải tệp CSV, cấu hình dữ liệu, xem đồ thị và xem kết quả dự đoán.
 
-Có thể, nhưng không tối ưu cho hệ thống hiện tại. Metadata như encoding maps, pipeline configs và query history là dữ liệu document, lưu MongoDB dễ quản lý hơn. Neo4j nên tập trung lưu graph nghiệp vụ để truy vấn quan hệ.
+Thứ hai là máy chủ điều phối, được xây bằng NestJS. Phần này nhận yêu cầu từ giao diện, kiểm tra dữ liệu, gọi các tiến trình Python, gọi Neo4j, gọi MongoDB và trả kết quả về cho giao diện.
 
-### 14. Vì sao không để Python xử lý toàn bộ backend?
+Thứ ba là Neo4j, dùng để lưu đồ thị nghiệp vụ và phục vụ các câu truy vấn quan hệ.
 
-Python mạnh về ML, nhưng backend web cần module hóa API, DTO validation, controller/service, kết nối nhiều hệ thống và quản lý request. NestJS phù hợp cho phần web backend, còn Python phù hợp cho GNN.
+Thứ tư là MongoDB, dùng để lưu thông tin mô tả quá trình xử lý như cấu trúc dữ liệu, cấu hình, lịch sử chạy và lịch sử câu hỏi.
 
-### 15. Hệ thống có điểm single point of failure nào không?
+Thứ năm là các tiến trình Python, dùng cho CSV2Graph, huấn luyện F-GNN và dự đoán gian lận.
 
-Có. Backend là orchestrator nên nếu backend dừng thì hệ thống không hoạt động. Ngoài ra LLM qua Colab/ngrok và Python services cũng là phụ thuộc runtime. Trong production cần container hóa, health check, retry, queue và monitoring.
+### 10. Vì sao phải tách nhiều phần như vậy?
 
-## 3. Câu hỏi về dữ liệu và CSV2Graph
+Dạ, vì mỗi phần có nhiệm vụ khác nhau. Giao diện chỉ nên tập trung vào trải nghiệm người dùng. Máy chủ điều phối chịu trách nhiệm kiểm soát luồng xử lý. Python phù hợp với học máy vì có PyTorch và các thư viện đồ thị. Neo4j phù hợp để lưu và truy vấn quan hệ. MongoDB phù hợp để lưu thông tin cấu hình dạng linh hoạt.
 
-### 16. Luồng từ CSV đến graph diễn ra như thế nào?
+Nếu gom tất cả vào một chỗ thì ban đầu có thể nhanh hơn, nhưng về sau sẽ khó bảo trì, khó thay thế mô hình và khó mở rộng.
 
-Người dùng upload CSV. Backend parse CSV, preview schema bằng LLM, người dùng xác nhận role cột. Sau đó backend đảm bảo `node_id`, preprocess feature, build star edges cho GNN, ghi `nodes.csv`, `edges.csv`, `schema.json`, có thể build `data.pt`, rồi import graph dị thể vào Neo4j và lưu metadata vào MongoDB.
+### 11. Máy chủ điều phối đóng vai trò gì?
 
-### 17. `node_id` là gì?
+Dạ, máy chủ điều phối là trung tâm của hệ thống. Nó không trực tiếp huấn luyện mô hình, nhưng nó biết lúc nào cần gọi tiến trình huấn luyện, lúc nào cần gọi dự đoán, lúc nào cần ghi dữ liệu vào Neo4j, và lúc nào cần lưu thông tin vào MongoDB.
 
-`node_id` là định danh duy nhất của mỗi giao dịch. Nó giúp hệ thống map transaction giữa CSV, `data.pt`, Neo4j và kết quả inference. Nếu CSV có cột định danh như `transaction_id` hoặc `trans_num`, người dùng có thể chọn cột đó.
+Có thể hiểu máy chủ điều phối giống như người quản lý quy trình. Nó đảm bảo các phần khác làm đúng thứ tự và dữ liệu đi qua các bước không bị lệch.
 
-### 18. Nếu CSV không có cột ID thì sao?
+### 12. Giao diện có gọi trực tiếp Neo4j không?
 
-Hệ thống có thể tự tạo `node_id`. Tuy nhiên trong demo và dữ liệu giao dịch thực tế, nên dùng cột định danh có sẵn để dễ đối chiếu kết quả.
+Dạ, không. Giao diện chỉ gọi máy chủ điều phối. Việc này giúp hệ thống an toàn và dễ kiểm soát hơn. Nếu giao diện gọi thẳng vào Neo4j thì người dùng có thể gửi câu truy vấn nguy hiểm hoặc làm lộ thông tin kết nối cơ sở dữ liệu.
 
-### 19. Vì sao cần bước review schema?
+Khi có máy chủ điều phối đứng giữa, hệ thống có thể kiểm tra câu truy vấn, chỉ cho phép đọc dữ liệu, ghi lịch sử và chuẩn hóa kết quả trước khi trả về giao diện.
 
-LLM chỉ gợi ý schema, không thể đảm bảo đúng hoàn toàn. Bước review cho phép người dùng xác nhận cột nào dùng cho GNN, cột nào dùng cho Neo4j, cột nào encode và cột nào loại bỏ. Điều này giảm rủi ro build sai graph hoặc sai feature vector.
+### 13. Vì sao dùng cả Neo4j và MongoDB?
 
-### 20. `Homo Role` là gì?
+Dạ, vì hai cơ sở dữ liệu này phục vụ hai loại dữ liệu khác nhau.
 
-`Homo Role` là vai trò của cột trong graph đồng nhất cho F-GNN. Nếu chọn `Relation`, cột đó đi vào `relation_cols` để tạo star edges. Nếu chọn `Feature`, cột đó đi vào `feature_cols` và được encode thành vector đặc trưng.
+Neo4j lưu dữ liệu nghiệp vụ dưới dạng đồ thị, tức là giao dịch, thực thể liên quan và các mối nối giữa chúng. Nó phù hợp để hỏi các câu như "giao dịch này liên quan đến những giao dịch nào".
 
-### 21. `Neo4j Role` là gì?
+MongoDB lưu thông tin mô tả vận hành, ví dụ cấu trúc cột của bộ dữ liệu, cách mã hóa giá trị chữ thành số, lịch sử chạy quy trình, lịch sử câu hỏi và cấu hình mô hình. Các thông tin này có dạng tài liệu linh hoạt, nên MongoDB phù hợp hơn.
 
-`Neo4j Role` là vai trò của cột trong graph dị thể import vào Neo4j. Nếu chọn `Relation`, cột đó đi vào `rel_hetero` để tạo auxiliary node và relationship. Nếu chọn `Feature`, cột đó đi vào `feature_hetero` để lưu thành property trên Transaction.
+### 14. Có thể chỉ dùng Neo4j cho tất cả không?
 
-### 22. Vì sao phải tách `Homo Role` và `Neo4j Role`?
+Dạ, về mặt kỹ thuật có thể, nhưng không tối ưu cho hệ thống hiện tại. Neo4j mạnh nhất khi lưu và truy vấn quan hệ. Còn các thông tin như cấu hình, lịch sử chạy, bản đồ mã hóa và lịch sử câu hỏi lại giống tài liệu vận hành hơn. Lưu các thông tin này trong MongoDB giúp quản lý đơn giản và rõ vai trò hơn.
 
-Vì mục tiêu của hai graph khác nhau. F-GNN cần graph đồng nhất transaction-transaction để train/inference. Neo4j cần graph dị thể transaction-entity để truy vấn và giải thích. Một cột có thể tốt cho visualization trong Neo4j nhưng không nhất thiết tốt cho GNN, nên cần tách role.
+### 15. Điểm yếu trong kiến trúc hiện tại là gì?
 
-### 23. `relation_cols` khác `rel_hetero` thế nào?
+Dạ, điểm yếu lớn nhất là một số thành phần vẫn phục vụ mục đích nghiên cứu. Ví dụ dịch vụ mô hình ngôn ngữ lớn đang chạy qua Colab và ngrok nên phụ thuộc vào phiên làm việc bên ngoài. Nếu Colab tắt thì chức năng gợi ý hoặc Text2Cypher có thể không chạy.
 
-`relation_cols` dùng để build star graph cho `data.pt`. `rel_hetero` dùng để tạo auxiliary nodes và relationships trong Neo4j. Trước đây hệ thống dùng chung một tập relation, hiện tại đã tách để tránh lẫn mục tiêu train và mục tiêu phân tích graph.
+Ngoài ra, việc huấn luyện mô hình cần thời gian và tài nguyên. Nếu đưa vào vận hành thật, cần đóng gói các thành phần bằng Docker, có cơ chế theo dõi tình trạng dịch vụ, hàng đợi xử lý tác vụ nặng, ghi lỗi đầy đủ và quản lý phiên bản mô hình tốt hơn.
 
-### 24. `feature_cols` khác `feature_hetero` thế nào?
+## 3. CSV2Graph và chuẩn bị dữ liệu
 
-`feature_cols` là feature cho GNN, sẽ được encode vào tensor `x`. `feature_hetero` là property lưu trên Transaction trong Neo4j để người dùng xem và truy vấn.
+### 16. CSV2Graph trong hệ thống có ý nghĩa gì?
 
-### 25. Vì sao không đưa tất cả cột CSV vào feature?
+Dạ, CSV2Graph là bước chuyển dữ liệu từ dạng bảng sang dạng đồ thị. Tệp CSV ban đầu chỉ gồm các dòng và cột. Sau bước này, mỗi giao dịch được xem như một đỉnh trong đồ thị, còn các quan hệ giữa giao dịch với cửa hàng, loại giao dịch, khu vực hoặc các thông tin liên quan sẽ được biểu diễn thành cạnh.
 
-Không phải cột nào cũng có ý nghĩa dự đoán. Một số cột là định danh, PII hoặc text quá riêng biệt như tên, địa chỉ, số thẻ. Nếu đưa tất cả vào feature, model có thể học nhiễu, học thuộc hoặc gây rủi ro riêng tư. Vì vậy cần chọn cột phù hợp.
+Ý nghĩa của bước này là giúp hệ thống không chỉ nhìn dữ liệu theo từng dòng, mà còn nhìn được mạng lưới liên hệ giữa các giao dịch.
 
-### 26. Vì sao không đưa target label vào feature?
+### 17. Nếu thầy cô không biết `node_id`, em giải thích thế nào?
 
-Target label như `is_fraud` là nhãn cần dự đoán. Nếu đưa nhãn vào feature, model sẽ bị leakage, tức là được nhìn thấy đáp án trong input. Hệ thống khóa target label để không chọn làm relation hoặc feature.
+Dạ, `node_id` là mã định danh duy nhất của mỗi giao dịch. Có thể hiểu giống như số căn cước của một giao dịch trong hệ thống.
 
-### 27. Vì sao cần lưu `rawColumns` và `originalIdCol`?
+Ví dụ trong CSV có cột `transaction_id` hoặc `trans_num`, mỗi dòng có một mã khác nhau. Hệ thống dùng mã này để biết giao dịch nào trong CSV tương ứng với giao dịch nào trong Neo4j và tương ứng với kết quả dự đoán nào của mô hình.
 
-Hai thông tin này giúp append dữ liệu mới đúng schema gốc. Backend dùng `rawColumns` để validate CSV mới có đủ cột bắt buộc, và dùng `originalIdCol` để tạo lại `node_id` nhất quán.
+### 18. Nếu thầy cô không biết `relation_cols`, em giải thích thế nào?
 
-### 28. Nếu file append có thêm cột mới thì sao?
+Dạ, `relation_cols` là các cột được dùng để tạo mối liên hệ trong đồ thị. Ví dụ cột cửa hàng, loại giao dịch, khu vực, nghề nghiệp hoặc người nhận tiền.
 
-Backend silent drop cột thừa. Lý do là schema canonical đã được xác nhận ở full build. Nếu nhận cột mới tùy ý, feature dimension và Neo4j schema có thể thay đổi, gây lỗi inference và Text2Cypher.
+Nếu hai giao dịch cùng có một giá trị ở các cột này, hệ thống có thể xem chúng có điểm liên quan. Ví dụ nhiều giao dịch cùng đi qua một cửa hàng đáng nghi thì khi biểu diễn thành đồ thị, các giao dịch này sẽ nối đến cùng một đỉnh cửa hàng.
 
-### 29. Nếu file append thiếu cột thì sao?
+### 19. Nếu thầy cô không biết `feature`, em giải thích thế nào?
 
-Nếu thiếu cột bắt buộc, backend báo lỗi. Ngoại lệ là target label có thể thiếu khi dataset đã có model, vì khi đó hệ thống có thể inference để gán nhãn.
+Dạ, `feature` là đặc trưng đầu vào cho mô hình học máy. Có thể hiểu đơn giản là các thông tin mô hình dùng để học và dự đoán.
 
-### 30. Nếu append có `is_fraud` nhưng chỉ một phần dòng có nhãn thì sao?
+Ví dụ số tiền giao dịch, thời điểm giao dịch, loại giao dịch đã được mã hóa thành số, tuổi chủ tài khoản, hoặc khoảng cách địa lý. Mô hình F-GNN sẽ dùng các đặc trưng này kết hợp với quan hệ đồ thị để đưa ra điểm nghi ngờ gian lận.
 
-Backend báo lỗi. Hệ thống yêu cầu hoặc có đầy đủ nhãn, hoặc bỏ hẳn cột nhãn để inference. Trạng thái nửa có nhãn nửa không có nhãn dễ gây sai lệch và khó giải thích.
+### 20. Khác nhau giữa cột đặc trưng và cột quan hệ là gì?
 
-## 4. Câu hỏi về hai loại graph
+Dạ, cột đặc trưng là thông tin đưa trực tiếp vào mô hình dưới dạng số để học. Cột quan hệ là thông tin dùng để nối các giao dịch lại với nhau trong đồ thị.
 
-### 31. Hệ thống có mấy loại graph?
+Ví dụ `amount` là số tiền, thường là đặc trưng. Còn `merchant` là cửa hàng, có thể dùng làm cột quan hệ vì nhiều giao dịch có thể cùng liên quan đến một cửa hàng.
 
-Có hai biểu diễn graph chính. Thứ nhất là homogeneous graph cho F-GNN/data.pt, trong đó transaction liên kết với transaction. Thứ hai là heterogeneous graph trong Neo4j, trong đó Transaction liên kết với các entity node như MerchantNode, CategoryNode, StateNode.
+Một cột đôi khi có thể vừa có ý nghĩa mô tả vừa có ý nghĩa quan hệ, nhưng trong hệ thống cần phân vai rõ để tránh dữ liệu bị xử lý sai.
 
-### 32. Homogeneous graph dùng để làm gì?
+### 21. `rawColumns` là gì trong dự án này?
 
-Homogeneous graph dùng cho F-GNN. Mỗi transaction là node chính, các edge nối các transaction có cùng giá trị relation như merchant hoặc category. Graph này được chuyển thành tensor `edge_index` trong `data.pt`.
+Dạ, `rawColumns` là danh sách các cột gốc có trong tệp CSV lúc người dùng đưa vào. Hệ thống lưu lại danh sách này để biết dữ liệu ban đầu gồm những cột nào, kể cả sau khi đã xử lý, mã hóa hoặc đổi vai trò cột.
 
-### 33. Heterogeneous graph dùng để làm gì?
+Nói dễ hiểu, `rawColumns` giống như mục lục cột ban đầu của tệp dữ liệu.
 
-Heterogeneous graph dùng cho Neo4j, Text2Cypher và visualization. Nó giúp người dùng thấy rõ một giao dịch liên quan đến merchant, category, state hoặc các thực thể chung nào.
+### 22. `originalIdCol` là gì?
 
-### 34. Vì sao F-GNN không dùng trực tiếp graph dị thể trong Neo4j?
+Dạ, `originalIdCol` là tên cột định danh gốc trong CSV. Ví dụ CSV có cột `trans_num`, nhưng bên trong hệ thống có thể chuẩn hóa thành `node_id` để xử lý thống nhất. Khi đó `originalIdCol` giúp hệ thống nhớ rằng mã định danh ban đầu thật ra đến từ cột `trans_num`.
 
-Mô hình hiện tại được thiết kế cho graph đồng nhất với transaction nodes là node chính. Neo4j graph dị thể có nhiều loại node và relationship khác nhau, phù hợp cho truy vấn và giải thích hơn. Để dùng trực tiếp graph dị thể, cần mô hình heterogeneous GNN khác.
+Thông tin này quan trọng khi cần đối chiếu ngược từ kết quả dự đoán về dòng dữ liệu gốc.
 
-### 35. Star graph là gì?
+### 23. Vì sao không dùng nhãn gian lận làm đặc trưng đầu vào?
 
-Star graph là cách tạo edge trong mỗi nhóm transaction có cùng giá trị relation. Thay vì nối tất cả cặp giao dịch trong nhóm, hệ thống chọn một transaction trung tâm và nối nó với các transaction còn lại. Cách này giảm số edge so với fully connected.
+Dạ, vì nhãn gian lận là đáp án cần dự đoán. Nếu đưa nhãn này vào đặc trưng đầu vào, mô hình sẽ học bằng cách nhìn trước đáp án. Khi đó kết quả đánh giá sẽ không còn có ý nghĩa.
 
-### 36. Vì sao không nối tất cả các giao dịch cùng merchant với nhau?
+Trong hệ thống, nhãn gian lận chỉ dùng để huấn luyện và kiểm tra kết quả, không dùng làm thông tin đầu vào khi dự đoán.
 
-Nếu một merchant có rất nhiều transaction, nối tất cả cặp sẽ tạo số edge rất lớn, gần O(n²), gây nặng bộ nhớ và train chậm. Star topology giảm số edge còn gần O(n), phù hợp hơn cho dữ liệu lớn.
+### 24. Khi người dùng thêm dữ liệu mới thì hệ thống xử lý thế nào?
 
-### 37. `max_group_size` dùng để làm gì?
+Dạ, khi thêm dữ liệu mới, hệ thống cần dùng lại cấu trúc dữ liệu và cách mã hóa đã có từ lần đầu. Lý do là mô hình đã học theo một cách biểu diễn nhất định. Nếu dữ liệu mới được mã hóa khác đi, mô hình có thể hiểu sai.
 
-`max_group_size` giới hạn số node trong mỗi nhóm relation khi tạo star edges. Nó tránh trường hợp một giá trị phổ biến tạo quá nhiều edge và làm graph quá lớn.
+Vì vậy hệ thống lưu cấu trúc, bản đồ mã hóa và cấu hình trong MongoDB để lần sau thêm dữ liệu vẫn xử lý nhất quán.
 
-### 38. Node types trong Neo4j đến từ đâu?
+### 25. Dùng khoảng 500 dòng CSV để trình diễn luồng huấn luyện có được không?
 
-Node chính là `Transaction` hoặc nodeLabel user chọn. Các auxiliary node được tạo từ `rel_hetero`, ví dụ `merchant` thành `MerchantNode`, `category` thành `CategoryNode`.
+Dạ, được nếu mục tiêu là minh họa luồng chạy của hệ thống. Với khoảng 500 dòng, mình có thể trình bày được các bước: đưa CSV vào, cấu hình cột, chuyển thành đồ thị, tạo dữ liệu cho F-GNN, huấn luyện thử và xem mô hình mới được lưu.
 
-### 39. Relationship types trong Neo4j đến từ đâu?
+Tuy nhiên, nếu nói về chất lượng mô hình thì 500 dòng là ít. Em sẽ trình bày rõ đây là dữ liệu phục vụ minh họa quy trình, không phải dữ liệu để kết luận mô hình đạt chất lượng trong thực tế.
 
-Relationship type được tạo từ tên cột relation, ví dụ `merchant` thành `HAS_MERCHANT`, `category` thành `HAS_CATEGORY`, `state` thành `HAS_STATE`.
+## 4. Hai loại đồ thị trong hệ thống
 
-## 5. Câu hỏi về F-GNN và `data.pt`
+### 26. Vì sao hệ thống có hai cách biểu diễn đồ thị?
 
-### 40. `data.pt` là gì?
+Dạ, vì hệ thống phục vụ hai mục đích khác nhau.
 
-`data.pt` là file PyTorch Geometric `Data`, chứa `x`, `edge_index`, `y` và các mask train/val/test. F-GNN không đọc CSV trực tiếp mà đọc file tensor này.
+Mục đích thứ nhất là cho mô hình F-GNN học và dự đoán. Với mục đích này, hệ thống tạo đồ thị giữa các giao dịch để mô hình học được sự ảnh hưởng giữa các giao dịch liên quan.
 
-### 41. `x` trong `data.pt` là gì?
+Mục đích thứ hai là cho người dùng phân tích trên Neo4j. Với mục đích này, hệ thống lưu đồ thị dễ hiểu hơn: giao dịch nối với cửa hàng, loại giao dịch, khu vực, người nhận hoặc các thực thể liên quan.
 
-`x` là ma trận feature của các transaction. Mỗi dòng tương ứng một transaction, mỗi cột là một feature đã được encode và scale.
+### 27. Đồ thị cho F-GNN được hiểu như thế nào?
 
-### 42. `edge_index` trong `data.pt` là gì?
+Dạ, với F-GNN, mỗi đỉnh chính thường là một giao dịch. Các giao dịch được nối với nhau nếu chúng có điểm chung theo những cột quan hệ đã chọn. Ví dụ hai giao dịch cùng cửa hàng hoặc cùng loại giao dịch thì có thể được nối trong đồ thị học máy.
 
-`edge_index` là danh sách cạnh của graph transaction-transaction. Nó được tạo từ `edges.csv` sau khi map `node_id` sang index của node trong tensor.
+Cách biểu diễn này giúp mô hình học từ giao dịch đang xét và cả những giao dịch lân cận.
 
-### 43. `y` trong `data.pt` là gì?
+### 28. Đồ thị trong Neo4j được hiểu như thế nào?
 
-`y` là nhãn của từng transaction, ví dụ 0 là bình thường và 1 là fraud. Trong train mode, `y` lấy từ cột target như `is_fraud`. Trong inference mode, `y` có thể là giá trị giả vì không dùng nhãn thật.
+Dạ, trong Neo4j, hệ thống biểu diễn dữ liệu gần với cách người dùng phân tích. Một giao dịch là một đỉnh. Cửa hàng, loại giao dịch, khu vực hoặc các thực thể khác cũng là các đỉnh. Giữa chúng có các mối nối như "giao dịch thuộc cửa hàng này" hoặc "giao dịch thuộc loại này".
 
-### 44. Train/val/test mask dùng để làm gì?
+Cách lưu này giúp khi bấm vào một giao dịch, người dùng có thể thấy nó liên quan đến những thực thể nào và có những giao dịch nào cùng liên quan.
 
-Mask chia node thành tập train, validation và test. Loss chỉ tính trên train mask. Validation dùng để chọn model/threshold. Test dùng để đánh giá cuối.
+### 29. Vì sao không dùng đúng một đồ thị cho cả hai mục đích?
 
-### 45. Input vào F-GNN là toàn bộ graph hay chỉ train graph?
+Dạ, có thể dùng một đồ thị duy nhất, nhưng sẽ không thuận lợi. Mô hình F-GNN cần dữ liệu được biểu diễn phù hợp cho tính toán, còn người dùng cần dữ liệu dễ đọc, dễ truy vấn và dễ nhìn trên giao diện.
 
-Input là toàn bộ graph trong `data.pt`, gồm train, validation và test nodes. Tuy nhiên quá trình train chỉ tính loss trên `train_mask`. Với cơ chế `y_masked`, label của val/test bị đặt là unknown để tránh lộ nhãn.
+Vì vậy hệ thống tách hai cách biểu diễn: một cách tối ưu cho mô hình, một cách tối ưu cho phân tích và hiển thị.
 
-### 46. Nếu test nodes nằm trong cùng graph với train thì có leakage không?
+### 30. Đồ thị hình sao là gì?
 
-Không nhất thiết. Trong GNN, transductive setting thường cho phép model thấy cấu trúc graph của toàn bộ nodes, nhưng không được thấy label val/test. Hệ thống xử lý bằng mask và `y_masked`: train nodes giữ label, còn val/test có label `-1` trong phần label-aware aggregation.
+Dạ, đồ thị hình sao là cách biểu diễn trong đó một giao dịch ở trung tâm và các thông tin liên quan nằm xung quanh. Ví dụ một giao dịch nối ra cửa hàng, loại giao dịch, khu vực và nghề nghiệp.
 
-### 47. `y_masked` là gì?
+Cách gọi "hình sao" xuất phát từ việc khi vẽ ra, một đỉnh trung tâm có nhiều nhánh tỏa ra xung quanh.
 
-`y_masked` là bản sao của `y`, nhưng các node không thuộc train mask được đặt thành `-1`. Mục tiêu là cho model biết label của train nodes khi cần, nhưng không lộ label của validation/test nodes.
+## 5. F-GNN và tệp `data.pt`
 
-### 48. Vì sao inference vẫn cần `data.pt` nếu dùng model có sẵn?
+### 31. F-GNN là gì?
 
-F-GNN cần input dạng graph tensor, không đọc CSV trực tiếp. Dù dùng model có sẵn, backend vẫn phải encode file append thành `preprocessed.csv`, build `data.pt`, rồi GNN service mới chạy được inference.
+Dạ, F-GNN là mô hình mạng nơ-ron đồ thị dùng cho bài toán phát hiện gian lận. Khác với mô hình học máy thông thường chỉ nhìn từng dòng dữ liệu, F-GNN học từ cả đặc trưng của giao dịch và các giao dịch liên quan trong đồ thị.
 
-### 49. Trong append inference, `data.pt` là file train cũ hay file mới?
+Trong bài toán này, điều đó có ý nghĩa vì gian lận thường xuất hiện theo nhóm hoặc theo mẫu quan hệ, chứ không phải lúc nào cũng thể hiện rõ ở một dòng riêng lẻ.
 
-Trong luồng hiện tại, append inference build một `data.pt` mới cho batch append. File này chứa graph của dữ liệu mới cần dự đoán, không phải file train cũ.
+### 32. `data.pt` là gì?
 
-### 50. F-GNN trả ra gì?
+Dạ, `data.pt` là tệp dữ liệu đã được chuẩn bị cho mô hình F-GNN. Có thể hiểu đây là phiên bản đã đóng gói của dữ liệu đồ thị sau khi CSV được xử lý.
 
-F-GNN trả logits cho từng node. GNN service dùng softmax để lấy xác suất class fraud, gọi là `fraud_score`, rồi so sánh với threshold để tạo `predictedLabel`.
+Trong tệp này có các thông tin như đặc trưng của giao dịch, danh sách các cạnh trong đồ thị, nhãn gian lận nếu có, và phần chia dữ liệu dùng để huấn luyện, kiểm tra trong quá trình đánh giá.
 
-### 51. `fraud_score` được tính thế nào?
+### 33. Trong `data.pt`, các thành phần chính có ý nghĩa gì?
 
-`fraud_score = softmax(logits)[class fraud]`. Nếu `fraud_score >= threshold`, hệ thống gán `is_fraud = 1`, ngược lại gán `is_fraud = 0`.
+Dạ, có thể giải thích đơn giản như sau:
 
-### 52. `threshold` là gì?
+- `x` là bảng đặc trưng của các giao dịch sau khi đã chuyển thành số.
+- `edge_index` là danh sách các cặp giao dịch có liên hệ với nhau.
+- `y` là nhãn gian lận, nếu bộ dữ liệu có nhãn.
+- `train_mask`, `val_mask`, `test_mask` là cách chia dữ liệu thành phần huấn luyện, phần kiểm tra trong lúc huấn luyện và phần kiểm tra cuối.
+- `y_masked` là nhãn đã được che bớt trong một số kịch bản để tránh mô hình nhìn trực tiếp đáp án.
 
-Threshold là ngưỡng chung dùng để đổi fraud score thành nhãn 0/1. Nó không phải threshold riêng cho từng transaction.
+Khi trình bày, không cần đi quá sâu vào mã nguồn. Chỉ cần nói `data.pt` là dữ liệu đồ thị đã được chuẩn hóa cho F-GNN.
 
-### 53. `inferenceThreshold` lấy từ đâu?
+### 34. Khi huấn luyện, mô hình nằm trong thư mục `models` có bị thay thế không?
 
-Nếu model được train trong web và trainer trả threshold đã tune, backend lưu vào MongoDB collection `datasets`. Khi append, backend dùng lại threshold này. Nếu không có, backend dùng `GNN_PRETRAINED_THRESHOLD` trong `.env`. Nếu vẫn không có, Python service mặc định 0.5.
+Dạ, có thể bị thay thế, tùy cấu hình đường dẫn mô hình đang hoạt động.
 
-### 54. Vì sao threshold không nhất thiết là 0.5?
+Trong hệ thống hiện tại, quá trình huấn luyện sẽ lưu mô hình tốt nhất của lần chạy vào thư mục kết quả của tác vụ. Sau đó hệ thống có thể sao chép mô hình này sang đường dẫn mô hình đang hoạt động, ví dụ `python-services/models/fgnn_star.pt`. Nếu đường dẫn này đang được dùng làm mô hình chính, thì mô hình cũ sẽ bị ghi đè.
 
-Với dữ liệu fraud mất cân bằng, ngưỡng 0.5 có thể không tối ưu. Có thể tune threshold theo F1, recall hoặc business cost trên validation set để cân bằng giữa bắt fraud và giảm false positive.
+Khi trình diễn, để an toàn, em có thể đổi đường dẫn mô hình đang hoạt động sang một tên riêng, ví dụ `fgnn_star_train_demo.pt`, hoặc sao lưu mô hình cũ trước khi huấn luyện.
 
-### 55. Nếu hạ threshold thì điều gì xảy ra?
+### 35. Điểm nghi ngờ gian lận được hiểu như thế nào?
 
-Hạ threshold thường làm model bắt nhiều fraud hơn, tức recall tăng, nhưng cũng có thể tăng false positive và giảm precision. Khi demo, hạ threshold có thể giúp thấy nhiều node fraud hơn, nhưng cần nói rõ đây là trade-off.
+Dạ, điểm nghi ngờ gian lận là giá trị mô hình trả ra cho mỗi giao dịch. Điểm càng cao thì mô hình càng nghi ngờ giao dịch đó là gian lận.
 
-### 56. Nếu model dự đoán sai thì sao?
+Sau đó hệ thống dùng một ngưỡng quyết định. Nếu điểm vượt ngưỡng thì giao dịch được đánh dấu là đáng nghi. Ngưỡng này có thể điều chỉnh tùy mục tiêu: muốn bắt nhiều gian lận hơn thì hạ ngưỡng, muốn giảm báo động nhầm thì tăng ngưỡng.
 
-Model chỉ hỗ trợ phân tích, không nên xem là quyết định cuối cùng tuyệt đối. Hệ thống hiển thị fraud score, graph context và các entity liên quan để phân tích viên kiểm tra thêm. Trong production cần human review và feedback loop.
+### 36. Vì sao cần ngưỡng quyết định?
 
-### 57. Vì sao train F-GNN lâu?
+Dạ, vì mô hình thường không trả lời đơn giản là "gian lận" hay "không gian lận", mà trả về một điểm xác suất hoặc điểm nghi ngờ. Ngưỡng quyết định giúp chuyển điểm đó thành kết luận dễ hiểu cho người dùng.
 
-GNN phải học trên graph lớn, có nhiều edge và feature. Với dataset lớn, quá trình message passing, sampling và evaluation tốn thời gian. Vì vậy demo nên dùng model pretrained, còn train thật nên chạy offline.
+Ví dụ nếu ngưỡng là 0,5 thì giao dịch có điểm 0,8 sẽ bị đánh dấu đáng nghi, còn giao dịch có điểm 0,2 thì không.
 
-### 58. Dùng model train từ Colab có hợp lý không?
+## 6. Neo4j và Cypher
 
-Hợp lý cho demo nếu schema và feature dimension tương thích. Tuy nhiên web không tự biết threshold tune từ Colab, nên cần cấu hình `GNN_PRETRAINED_THRESHOLD` hoặc lưu metadata threshold nếu muốn inference đúng với quá trình train.
+### 37. Neo4j có vai trò gì trong hệ thống?
 
-### 59. Nếu feature dimension của `data.pt` không khớp model thì sao?
+Dạ, Neo4j là nơi lưu dữ liệu đồ thị phục vụ phân tích. Nó lưu các giao dịch, các thực thể liên quan và mối nối giữa chúng. Khi người dùng muốn xem một giao dịch liên quan đến những gì, hoặc muốn tìm các cụm giao dịch đáng nghi, Neo4j là phần thực hiện truy vấn đó.
 
-Python GNN service kiểm tra dimension. Nếu `data.x.shape[1]` khác input dimension của model, service báo lỗi feature dimension mismatch. Đây là lý do append phải dùng schema và encoding maps cũ.
+### 38. Cypher là gì?
 
-## 6. Câu hỏi về Neo4j
+Dạ, Cypher là ngôn ngữ truy vấn của Neo4j. Nếu SQL thường dùng để hỏi dữ liệu bảng, thì Cypher dùng để hỏi dữ liệu đồ thị.
 
-### 60. Vì sao dùng Neo4j?
+Điểm dễ hiểu của Cypher là cách viết giống như mô tả đường đi trong đồ thị: bắt đầu từ một đỉnh, đi theo một mối quan hệ, rồi đến đỉnh khác.
 
-Neo4j là graph database, phù hợp lưu và truy vấn quan hệ giữa các giao dịch. Cypher giúp truy vấn pattern như transaction cùng merchant/category rất tự nhiên, dễ hơn so với join nhiều bảng SQL.
+### 39. Vì sao giao diện đôi khi chỉ hiện đỉnh mà không hiện cạnh?
 
-### 61. SQL có làm được không?
+Dạ, đồ thị trên giao diện chỉ hiện cạnh nếu câu truy vấn trả về cả mối quan hệ. Nếu câu truy vấn chỉ trả về giao dịch mà không trả về mối nối, giao diện chỉ có dữ liệu để vẽ đỉnh.
 
-SQL vẫn làm được nhiều truy vấn, nhưng khi truy vấn quan hệ nhiều bước và trực quan hóa cụm liên kết, Cypher trên graph trực quan hơn. Neo4j cũng giúp hiển thị node/relationship trực tiếp, phù hợp với phân tích fraud theo cụm.
+Vì vậy trong Text2Cypher, khi muốn hiển thị đồ thị, câu Cypher nên trả về cả đỉnh giao dịch, đỉnh liên quan và mối quan hệ giữa chúng.
 
-### 62. Ví dụ nào chứng minh graph hữu ích hơn bảng?
+### 40. Khi bấm vào một hồ sơ giao dịch, vì sao cần hiện thêm các thuộc tính khác?
 
-Ví dụ tìm các giao dịch fraud mới được inference có cùng merchant hoặc category và trả về cả transaction, shared entity và relationship. Với graph, query pattern `(t)-[r]->(shared)` rất tự nhiên và UI có thể vẽ cụm nghi vấn ngay.
+Dạ, vì người phân tích không chỉ cần biết mã giao dịch. Họ cần xem số tiền, thời gian, điểm nghi ngờ, nhãn dự đoán, cửa hàng, loại giao dịch, khu vực và các thông tin liên quan khác.
 
-### 63. Neo4j lưu những property nào trên Transaction?
+Trong hệ thống, một số thông tin nằm trực tiếp trong đỉnh giao dịch, một số thông tin nằm ở các đỉnh liên quan. Vì vậy giao diện cần gom các thông tin này lại để người dùng thấy một hồ sơ giao dịch đầy đủ hơn.
 
-Neo4j lưu `node_id`, các cột `feature_hetero`, target label như `is_fraud` nếu có, và khi inference có thêm `fraud_score`, `inference_threshold`, `is_inferred`, `ingest_job_id`.
+### 41. Neo4j giúp giải thích kết quả dự đoán như thế nào?
 
-### 64. Vì sao cần `is_inferred`?
+Dạ, sau khi F-GNN đánh dấu một giao dịch đáng nghi, Neo4j giúp xem giao dịch đó liên quan đến những thực thể và giao dịch nào khác. Ví dụ giao dịch đó cùng cửa hàng với nhiều giao dịch đáng nghi khác, hoặc cùng loại giao dịch và khu vực với một nhóm bất thường.
 
-`is_inferred` giúp phân biệt transaction có nhãn dự đoán bởi model với transaction có nhãn gốc từ dataset. Khi demo append inference, ta có thể query riêng những node mới được model dự đoán.
+Nhờ đó, kết quả không chỉ là một con số. Người dùng có thể kiểm tra quan hệ xung quanh để hiểu lý do giao dịch bị nghi ngờ.
 
-### 65. Vì sao cần `ingest_job_id`?
+## 7. MongoDB và thông tin mô tả hệ thống
 
-`ingest_job_id` giúp biết transaction thuộc lần append nào. Điều này hữu ích khi cần xuất lại kết quả, kiểm tra batch mới hoặc demo chỉ dữ liệu vừa inference.
+### 42. MongoDB lưu những gì?
 
-### 66. Vì sao cần `fraud_score` nếu đã có `is_fraud`?
+Dạ, MongoDB lưu thông tin phục vụ vận hành, không phải đồ thị chính. Các thông tin này gồm cấu trúc bộ dữ liệu, vai trò các cột, bản đồ mã hóa, lịch sử chạy quy trình, lịch sử câu hỏi, trạng thái mô hình và các cấu hình cần dùng lại khi thêm dữ liệu mới.
 
-`is_fraud` chỉ là nhãn 0/1 sau threshold. `fraud_score` cho biết mức độ nghi ngờ, giúp analyst ưu tiên xem các transaction có score cao nhất.
+### 43. Cấu trúc dữ liệu mà Text2Cypher lấy từ MongoDB nằm ở đâu?
 
-### 67. Neo4j dùng CREATE hay MERGE?
+Dạ, trong hệ thống hiện tại, Text2Cypher lấy bản mô tả cấu trúc đồ thị từ MongoDB, trong nhóm dữ liệu liên quan đến bộ dữ liệu. Phần quan trọng là trường `graphSchema`, thường được lưu cùng bản ghi mô tả bộ dữ liệu trong MongoDB.
 
-Full build dùng `CREATE` vì database được xem là rỗng, nhanh hơn. Append dùng `MERGE` theo `node_id` để tránh duplicate và upsert an toàn.
+Nói dễ hiểu, đây là bản mô tả cho mô hình ngôn ngữ biết trong Neo4j có những loại đỉnh nào, quan hệ nào và thuộc tính nào để sinh câu Cypher đúng hơn.
 
-### 68. Hệ thống có tạo index/constraint trong Neo4j không?
+### 44. Vì sao phải lưu bản mô tả cấu trúc dữ liệu?
 
-Có. Ingest service tạo unique constraint cho `Transaction.node_id` và cho `value` của auxiliary nodes. Constraint giúp MERGE nhanh và tránh duplicate.
+Dạ, vì mỗi bộ dữ liệu CSV có thể có cột khác nhau. Nếu không lưu cấu trúc, hệ thống sẽ không biết dữ liệu hiện tại có những loại đỉnh, quan hệ và thuộc tính nào.
 
-### 69. Nếu node_id trùng khi append thì sao?
+Bản mô tả cấu trúc giúp các lần xử lý sau nhất quán. Nó cũng giúp Text2Cypher sinh câu truy vấn bám đúng dữ liệu thật, thay vì tự đoán tên cột hoặc tên quan hệ.
 
-Backend kiểm tra duplicate node_id trong Neo4j trước khi ingest. Nếu phát hiện trùng, backend trả lỗi conflict để tránh update nhầm transaction cũ.
+### 45. Vì sao cần lưu bản đồ mã hóa?
 
-## 7. Câu hỏi về MongoDB và metadata
+Dạ, nhiều cột trong CSV là chữ, ví dụ tên cửa hàng, loại giao dịch hoặc nghề nghiệp. Mô hình học máy lại cần số. Vì vậy hệ thống phải mã hóa các giá trị chữ thành số.
 
-### 70. MongoDB lưu gì?
+Bản đồ mã hóa giúp hệ thống nhớ rằng giá trị chữ nào đã được đổi thành số nào. Khi có dữ liệu mới, hệ thống dùng lại bản đồ này để tránh cùng một giá trị nhưng bị đổi thành hai số khác nhau.
 
-MongoDB lưu connection metadata, dataset metadata, pipeline config, encoding maps, pipeline runs và query history.
+## 8. Text2Cypher
 
-### 71. Collection `datasets` lưu gì?
+### 46. Text2Cypher là gì?
 
-`datasets` lưu trạng thái dataset hiện tại như database, nodeLabel, targetLabel, columns, graphSchema, hasModel, activeModelPath, inferenceThreshold và trainingMetrics.
+Dạ, Text2Cypher là chức năng chuyển câu hỏi tự nhiên của người dùng thành câu truy vấn Cypher cho Neo4j.
 
-### 72. Collection `pipeline_configs` lưu gì?
+Ví dụ người dùng hỏi: "Cho tôi xem các giao dịch nghi ngờ gian lận có cùng cửa hàng". Hệ thống sẽ dựa vào cấu trúc đồ thị hiện tại để sinh ra câu Cypher, kiểm tra câu đó có an toàn không, chạy trên Neo4j và trả kết quả về giao diện.
 
-Nó lưu schema pipeline như relationCols, relHetero, featureCols, featureHetero, encodedFeatureCols, encodingHints, rawColumns, originalIdCol, trainRatio, valRatio, seed và maxGroupSize.
+### 47. Vì sao cần Text2Cypher?
 
-### 73. Collection `encoding_maps` dùng để làm gì?
+Dạ, không phải người dùng nghiệp vụ nào cũng biết viết Cypher. Text2Cypher giúp người dùng khai thác dữ liệu đồ thị bằng cách đặt câu hỏi tự nhiên. Điều này làm hệ thống dễ dùng hơn, đặc biệt trong bối cảnh phân tích gian lận, nơi người dùng thường muốn đặt nhiều câu hỏi linh hoạt.
 
-Nó lưu mapping encode cho categorical features. Khi append, backend dùng lại mapping cũ để đảm bảo feature vector có cùng ý nghĩa và dimension với lúc train.
+### 48. Text2Cypher có luôn đúng không?
 
-### 74. Collection `pipeline_runs` dùng để làm gì?
+Dạ, không thể đảm bảo luôn đúng. Mô hình ngôn ngữ lớn có thể sinh sai tên thuộc tính, sai quan hệ hoặc hiểu sai ý người dùng. Vì vậy hệ thống có các bước kiểm tra: chỉ cho phép truy vấn đọc dữ liệu, kiểm tra cấu trúc câu truy vấn, thử giải thích câu truy vấn trước khi chạy thật, và có thể yêu cầu mô hình sửa lại khi câu truy vấn lỗi.
 
-Nó lưu lịch sử từng lần full build hoặc append, bao gồm jobId, mode, fileName, stats, training result, inference result và completedAt.
+Tuy nhiên, ngay cả khi câu truy vấn chạy được, vẫn cần người dùng kiểm tra ý nghĩa kết quả trong những trường hợp quan trọng.
 
-### 75. Nếu xóa MongoDB nhưng Neo4j còn dữ liệu thì sao?
+### 49. Vì sao phải giới hạn Text2Cypher chỉ được đọc dữ liệu?
 
-Hệ thống có thể không biết schema canonical để append hoặc Text2Cypher đúng. Vì vậy nếu drop MongoDB, nên xóa Neo4j database tương ứng hoặc full build lại để tạo metadata mới.
+Dạ, vì câu truy vấn do mô hình sinh ra có rủi ro. Nếu cho phép ghi, xóa hoặc sửa dữ liệu thì chỉ một câu sai cũng có thể làm hỏng dữ liệu trong Neo4j.
 
-### 76. Nếu xóa Neo4j nhưng MongoDB còn metadata thì sao?
+Do đó hệ thống chỉ cho phép các câu truy vấn đọc dữ liệu. Đây là cách bảo vệ an toàn cơ bản khi dùng mô hình ngôn ngữ lớn để sinh câu truy vấn.
 
-Metadata có thể không khớp với dữ liệu thật. Nên đồng bộ hai bên: nếu tạo Neo4j DB mới sạch, nên xóa hoặc tạo lại metadata MongoDB tương ứng bằng full build.
+### 50. Nếu mô hình sinh câu truy vấn sai thì hệ thống làm gì?
 
-### 77. MongoDB có tự tạo collection không?
+Dạ, hệ thống có thể phát hiện lỗi khi kiểm tra hoặc khi Neo4j trả lỗi. Sau đó lỗi này được gửi lại cho mô hình để mô hình sinh lại câu truy vấn phù hợp hơn.
 
-Có. Khi backend chạy và ghi dữ liệu lần đầu, Mongoose/MongoDB sẽ tạo collection nếu chưa có. Tuy nhiên dữ liệu metadata chỉ xuất hiện sau khi có workflow ghi vào.
+Cách này không làm hệ thống đúng tuyệt đối, nhưng giúp giảm các lỗi đơn giản như sai tên thuộc tính, thiếu quan hệ hoặc viết sai cú pháp.
 
-## 8. Câu hỏi về Text2Cypher
+### 51. Exact, Partial, Ignore Col., Superset, Subset trong đánh giá Text2Cypher là gì?
 
-### 78. Text2Cypher trong hệ thống làm gì?
+Dạ, có thể giải thích dễ hiểu như sau.
 
-Text2Cypher nhận câu hỏi tự nhiên, lấy schema graph, gọi LLM để sinh Cypher, validate bằng read-only guard và Neo4j EXPLAIN, sau đó execute query và trả graph/scalars cho frontend.
+`Exact` nghĩa là câu dự đoán trả ra kết quả khớp hoàn toàn với câu đúng.
 
-### 79. Vì sao cần Text2Cypher?
+`Partial` nghĩa là câu dự đoán đúng một phần quan trọng, nhưng chưa khớp hoàn toàn.
 
-Không phải người dùng nào cũng biết Cypher. Text2Cypher giúp analyst hỏi bằng ngôn ngữ tự nhiên, ví dụ “tìm các giao dịch fraud cùng merchant”, hệ thống tự chuyển thành Cypher.
+`Ignore Col.` nghĩa là khi so sánh thì tạm bỏ qua khác biệt về tên cột hoặc thứ tự cột, chỉ xem nội dung chính có đúng không.
 
-### 80. LLM sinh Cypher sai thì sao?
+`Superset` nghĩa là câu dự đoán trả về nhiều hơn kết quả đúng. Nó có chứa phần đúng nhưng bị dư.
 
-Backend không chạy ngay query. Nó kiểm tra read-only, chạy `EXPLAIN`, nếu lỗi thì gửi Cypher sai và error log cho LLM để sửa. Sau một số lần sửa vẫn lỗi thì trả lỗi cho người dùng.
+`Subset` nghĩa là câu dự đoán trả về ít hơn kết quả đúng. Nó đúng một phần nhưng bị thiếu.
 
-### 81. `EXPLAIN` kiểm tra được gì?
+Nếu nói trước hội đồng, em có thể nói: các độ đo này giúp đánh giá câu truy vấn sinh ra đúng đến mức nào, không chỉ chấm đúng hoặc sai tuyệt đối.
 
-`EXPLAIN` kiểm tra cú pháp và tính hợp lệ của query với schema Neo4j mà không thực thi query thật. Nó giúp phát hiện label, relationship hoặc property sai trước khi chạy.
+### 52. "Correct predictions" dịch là gì?
 
-### 82. `EXPLAIN` có đảm bảo query đúng nghiệp vụ không?
+Dạ, có thể dịch là "các dự đoán đúng". Nếu dùng trong bảng kết quả, em có thể ghi là "Số dự đoán đúng" hoặc "Những trường hợp dự đoán đúng", tùy ngữ cảnh.
 
-Không. `EXPLAIN` chỉ đảm bảo query chạy được về mặt cú pháp/schema, không đảm bảo ý nghĩa nghiệp vụ đúng. Vì vậy hệ thống vẫn cần few-shot, prompt tốt và người dùng kiểm tra Cypher sinh ra.
+## 9. Giao diện và trải nghiệm sử dụng
 
-### 83. Read-only guard để làm gì?
+### 53. Giao diện chính cho phép người dùng làm gì?
 
-Read-only guard chặn các câu Cypher có nguy cơ ghi/xóa/admin như `CREATE`, `MERGE`, `DELETE`, `SET`, `DROP`, `CALL`, `LOAD CSV`. Điều này bảo vệ database khỏi query nguy hiểm do LLM sinh ra.
+Dạ, giao diện cho phép người dùng tải tệp CSV, xem trước dữ liệu, chọn vai trò các cột, chạy quy trình chuyển dữ liệu thành đồ thị, xem danh sách giao dịch đáng nghi, xem đồ thị quan hệ và đặt câu hỏi bằng ngôn ngữ tự nhiên.
 
-### 84. Vì sao Cypher phải RETURN node/relationship thì UI mới vẽ graph?
+Mục tiêu của giao diện là giúp người dùng đi từ dữ liệu thô đến kết quả phân tích mà không cần tự viết mã.
 
-Frontend vẽ graph từ object Neo4j Node, Relationship hoặc Path. Nếu query chỉ return scalar như `node_id` hoặc `count`, UI chỉ có bảng scalar, không có đủ thông tin để vẽ node/edge.
+### 54. Vì sao cần màn hình xem trước CSV?
 
-### 85. Schema linking là gì?
+Dạ, vì hệ thống cần người dùng kiểm tra lại dữ liệu trước khi xử lý. Mô hình ngôn ngữ lớn có thể gợi ý vai trò cột, nhưng người dùng vẫn cần xác nhận. Ví dụ cột nào là mã giao dịch, cột nào là nhãn gian lận, cột nào là đặc trưng và cột nào dùng để tạo quan hệ.
 
-Schema linking là bước backend lọc schema theo các label có liên quan đến Cypher V1, giúp LLM generate lần hai với context gọn hơn và giảm nhiễu khi schema lớn.
+Bước này giúp giảm lỗi trước khi dữ liệu được đưa vào mô hình và Neo4j.
 
-### 86. Nếu LLM không sinh được Cypher đúng thì hệ thống có thất bại không?
+### 55. Vì sao danh sách giao dịch nghi vấn vẫn cần thiết nếu đã có đồ thị?
 
-Trường hợp đó query thất bại và hệ thống trả lỗi. Đây là hạn chế của Text2Cypher. Tuy nhiên hệ thống đã có self-correction và read-only guard để giảm rủi ro.
+Dạ, danh sách giúp người dùng xem nhanh các giao dịch có điểm nghi ngờ cao nhất. Đồ thị giúp phân tích sâu hơn quan hệ xung quanh từng giao dịch.
 
-## 9. Câu hỏi về frontend và UX
+Hai cách xem này bổ sung cho nhau: bảng giúp lọc và sắp xếp, còn đồ thị giúp hiểu quan hệ.
 
-### 87. Frontend dùng những công nghệ gì?
+### 56. Khi bấm vào giao dịch, cần hiển thị những gì?
 
-Frontend dùng React, TypeScript, Vite, Tailwind CSS, TanStack React Query, Zustand, Axios và `react-force-graph-2d`.
+Dạ, nên hiển thị mã giao dịch, điểm nghi ngờ, nhãn dự đoán, số tiền, thời gian, loại giao dịch, cửa hàng, khu vực và các thuộc tính liên quan có trong dữ liệu. Nếu giao dịch có các đỉnh liên quan trong Neo4j, giao diện nên gom các thông tin đó lại để người dùng không phải tự mở từng đỉnh.
 
-### 88. React Query dùng để làm gì?
+Đây là phần quan trọng khi trình diễn, vì hội đồng thường muốn thấy hệ thống không chỉ vẽ đồ thị mà còn cung cấp hồ sơ giao dịch rõ ràng.
 
-React Query dùng để gọi API, cache server state và refetch dữ liệu như dataset-info, graph-preview, query result. Nó phù hợp cho dữ liệu lấy từ backend.
+## 10. Trình diễn hệ thống
 
-### 89. Zustand dùng để làm gì?
+### 57. Nên trình diễn theo luồng nào cho dễ hiểu?
 
-Zustand lưu client state như connection state, dataset state, selected node, query state và history UX.
+Dạ, em nên trình diễn theo luồng sau:
 
-### 90. Khi click node trên graph thì UI hiển thị gì?
+1. Tải tệp CSV giao dịch lên.
+2. Cho hệ thống gợi ý vai trò các cột.
+3. Xác nhận mã giao dịch, nhãn gian lận, cột đặc trưng và cột tạo quan hệ.
+4. Chạy bước chuyển CSV thành đồ thị.
+5. Xem dữ liệu trong Neo4j hoặc trên giao diện đồ thị.
+6. Chạy dự đoán hoặc huấn luyện thử nếu muốn trình diễn phần huấn luyện.
+7. Xem danh sách giao dịch đáng nghi.
+8. Bấm vào một giao dịch để xem hồ sơ chi tiết.
+9. Đặt một câu hỏi bằng Text2Cypher để hiển thị cụm giao dịch liên quan.
 
-UI mở `NodeDetailPanel`, hiển thị trạng thái fraud, fraud score, threshold nếu có, danh sách properties của node và các node liên quan trực tiếp trong kết quả graph hiện tại.
+### 58. Nếu thời gian trình diễn ngắn, nên tập trung vào phần nào?
 
-### 91. Vì sao có bảng suspicious transactions?
+Dạ, nếu chỉ có vài phút, em nên tập trung vào ba điểm: CSV được chuyển thành đồ thị, mô hình trả ra điểm nghi ngờ gian lận, và Neo4j/Text2Cypher giúp xem quan hệ giải thích xung quanh giao dịch đáng nghi.
 
-Bảng này giúp analyst nhanh chóng thấy các transaction đáng chú ý trong kết quả graph, đặc biệt các node có `is_fraud` hoặc `fraud_score`, và click để mở hồ sơ giao dịch.
+Không nên dành quá nhiều thời gian cho chi tiết kỹ thuật nội bộ, vì hội đồng cần thấy giá trị của hệ thống trước.
 
-### 92. Nếu graph chỉ hiển thị node mà không có edge thì nguyên nhân có thể là gì?
+### 59. Nếu trình diễn huấn luyện bị lâu thì nói thế nào?
 
-Có thể Cypher chỉ return node mà không return relationship/path. Cũng có thể query không match quan hệ nào. Muốn vẽ edge, query nên return `t, r, shared` hoặc `p`.
+Dạ, em có thể nói phần huấn luyện F-GNN là tác vụ nặng, cần thời gian và tài nguyên tính toán. Trong phần trình diễn, em dùng bộ dữ liệu nhỏ để minh họa quy trình. Với dữ liệu lớn hơn, hệ thống nên chạy huấn luyện ở chế độ nền hoặc trên máy chủ có GPU.
 
-## 10. Câu hỏi về demo
+Nếu không đủ thời gian chạy trực tiếp, em có thể dùng mô hình đã huấn luyện sẵn để trình diễn phần dự đoán và phân tích kết quả.
 
-### 93. Vì sao demo không full build toàn bộ dataset lớn?
+### 60. Nếu mô hình không phát hiện được gian lận trong lúc trình diễn thì xử lý thế nào?
 
-Full build và train trên dataset lớn có thể mất nhiều phút đến hàng giờ, không phù hợp thời lượng bảo vệ. Demo nên dùng dataset nền nhỏ hoặc build sẵn, sau đó append file nhỏ để chứng minh inference và phân tích graph.
+Dạ, trước khi trình diễn cần chuẩn bị bộ dữ liệu có cả giao dịch gian lận và không gian lận. Nếu dùng mẫu quá nhỏ hoặc phân bố nhãn không phù hợp, mô hình có thể không đánh dấu được giao dịch nào.
 
-### 94. Luồng demo 5 phút nên trình bày thế nào?
+Khi trình bày, em cũng nên nói rõ kết quả trình diễn phụ thuộc vào dữ liệu mẫu. Mục tiêu trình diễn là chứng minh quy trình hoạt động, còn đánh giá chất lượng mô hình cần bộ dữ liệu lớn và chia tập kiểm tra nghiêm túc.
 
-Em nên trình bày: hệ thống đã có graph nền từ full build, sau đó append file mới không có `is_fraud`, model dự đoán fraud, Neo4j có thêm transaction mới với `fraud_score`, rồi dùng Text2Cypher để tìm cụm fraud theo shared merchant/category và click node để phân tích.
+## 11. Đánh giá mô hình
 
-### 95. Nếu hội đồng hỏi vì sao append file không có nhãn vẫn dự đoán được?
+### 61. Vì sao không chỉ dùng độ chính xác?
 
-Vì dataset nền đã có model hoặc model demo. File append không có nhãn được encode theo schema cũ, build thành `data.pt`, GNN service dự đoán `fraud_score`, backend so với threshold để gán `is_fraud`.
+Dạ, vì trong bài toán gian lận, số giao dịch gian lận thường rất ít so với giao dịch bình thường. Nếu mô hình đoán tất cả là bình thường, độ chính xác có thể vẫn cao nhưng mô hình không có giá trị.
 
-### 96. Nếu model dự đoán 0/500 fraud thì giải thích sao?
+Do đó cần thêm các chỉ số như khả năng phát hiện đúng gian lận, mức độ báo động nhầm và điểm cân bằng giữa hai yếu tố này.
 
-Có thể do threshold cao, model chưa phù hợp với sample, sample thật sự ít fraud, hoặc feature distribution khác dữ liệu train. Có thể kiểm tra `fraud_score` thay vì chỉ nhãn 0/1, hoặc điều chỉnh threshold cho mục tiêu demo nhưng phải nói rõ trade-off.
+### 62. Các chỉ số đánh giá nên giải thích thế nào?
 
-### 97. Nếu Text2Cypher sinh query không vẽ graph thì xử lý sao?
+Dạ, có thể giải thích bằng tiếng Việt như sau.
 
-Cần chỉnh few-shot hoặc câu hỏi để yêu cầu return transaction nodes, shared entity nodes và relationship objects. Ví dụ thêm “return the transaction nodes, shared entity nodes, and all relationship objects”.
+Precision, có thể hiểu là độ đúng khi cảnh báo. Nghĩa là trong các giao dịch bị báo đáng nghi, có bao nhiêu giao dịch thật sự là gian lận. Chỉ số này liên quan đến báo động nhầm.
 
-### 98. Câu hỏi demo tốt nhất để chứng minh graph hữu ích là gì?
+Recall, có thể hiểu là khả năng phát hiện gian lận. Nghĩa là trong tất cả giao dịch gian lận thật, mô hình tìm được bao nhiêu. Chỉ số này liên quan đến khả năng không bỏ sót gian lận.
 
-Một câu tốt là: “Find newly inferred fraud transactions that are connected through the same merchant and category, return the transaction nodes, shared entity nodes, and all relationship objects so the graph can show suspicious clusters.” Câu này chứng minh hệ thống tìm cụm giao dịch nghi vấn qua node/entity chung.
+F1 là điểm cân bằng giữa độ đúng khi cảnh báo và khả năng phát hiện.
 
-### 99. Khi thuyết trình graph cluster thì nói gì?
+AUC là chỉ số cho biết mô hình phân biệt giao dịch gian lận và bình thường tốt đến mức nào trên nhiều ngưỡng khác nhau.
 
-Em có thể nói: mỗi node đỏ là giao dịch bị dự đoán fraud, các node entity như MerchantNode hoặc CategoryNode là điểm chung. Khi nhiều giao dịch fraud cùng kết nối tới một entity, analyst có thể ưu tiên kiểm tra entity đó vì nó tạo thành cụm nghi vấn.
+### 63. Trong bài toán gian lận, nên ưu tiên độ đúng khi cảnh báo hay khả năng phát hiện?
 
-### 100. Nếu demo bị chậm thì nên bỏ phần nào?
+Dạ, tùy mục tiêu nghiệp vụ. Nếu ngân hàng muốn không bỏ sót gian lận, cần ưu tiên khả năng phát hiện. Nhưng nếu đội kiểm tra có nguồn lực hạn chế và không muốn quá nhiều báo động nhầm, cần quan tâm độ đúng khi cảnh báo.
 
-Nên bỏ train trực tiếp. Tập trung vào graph đã build sẵn, append inference, Text2Cypher và click node phân tích. Train có thể trình bày bằng log/kết quả thay vì chạy live.
+Trong thực tế thường phải cân bằng hai chỉ số này bằng cách chọn ngưỡng phù hợp.
 
-## 11. Câu hỏi về đánh giá mô hình
+### 64. Nếu dữ liệu mất cân bằng thì xử lý thế nào?
 
-### 101. Vì sao accuracy không đủ trong fraud detection?
+Dạ, có thể xử lý bằng nhiều cách: chia dữ liệu cẩn thận để tập kiểm tra vẫn có giao dịch gian lận, dùng trọng số cho lớp thiểu số, điều chỉnh ngưỡng quyết định, hoặc bổ sung dữ liệu gian lận nếu có.
 
-Dữ liệu fraud thường mất cân bằng, số giao dịch bình thường nhiều hơn rất nhiều. Một model đoán tất cả là bình thường có thể accuracy cao nhưng không phát hiện fraud. Vì vậy cần xem precision, recall, F1, AUC hoặc PR-AUC.
+Điều quan trọng là khi báo cáo kết quả không chỉ nhìn độ chính xác tổng thể, mà phải nhìn riêng khả năng phát hiện gian lận.
 
-### 102. Precision là gì?
+## 12. Bảo mật và an toàn
 
-Precision cho biết trong các giao dịch model dự đoán là fraud, bao nhiêu giao dịch thật sự là fraud. Precision cao nghĩa là ít báo động giả.
+### 65. Hệ thống có rủi ro gì khi cho người dùng tải CSV?
 
-### 103. Recall là gì?
+Dạ, có. CSV có thể chứa dữ liệu sai định dạng, thiếu cột, cột nguy hiểm hoặc dữ liệu nhạy cảm. Vì vậy hệ thống cần kiểm tra định dạng, giới hạn kích thước, kiểm tra vai trò cột và không tự động tin hoàn toàn vào dữ liệu người dùng đưa lên.
 
-Recall cho biết trong toàn bộ giao dịch fraud thật, model bắt được bao nhiêu. Recall cao nghĩa là ít bỏ sót fraud.
+Nếu triển khai thực tế, cần thêm kiểm soát quyền truy cập và xử lý dữ liệu cá nhân cẩn thận hơn.
 
-### 104. F1-score là gì?
+### 66. Rủi ro khi dùng Text2Cypher là gì?
 
-F1 là trung bình điều hòa giữa precision và recall. Nó hữu ích khi cần cân bằng giữa bắt fraud và giảm false positive.
+Dạ, rủi ro là mô hình ngôn ngữ lớn có thể sinh câu truy vấn sai hoặc không đúng ý người dùng. Nguy hiểm hơn, nếu không kiểm soát, nó có thể sinh câu truy vấn làm thay đổi dữ liệu.
 
-### 105. AUC là gì?
+Vì vậy hệ thống chỉ cho phép truy vấn đọc dữ liệu, kiểm tra câu truy vấn trước khi chạy, và không để người dùng hoặc mô hình gửi câu lệnh tự do trực tiếp vào Neo4j.
 
-AUC đo khả năng model xếp hạng fraud cao hơn non-fraud trên nhiều ngưỡng threshold. Nó không phụ thuộc vào một threshold cố định.
+### 67. Nếu dữ liệu có thông tin cá nhân thì sao?
 
-### 106. Trong fraud detection nên ưu tiên precision hay recall?
+Dạ, nếu đưa vào vận hành thực tế, hệ thống cần che hoặc ẩn các thông tin nhạy cảm, phân quyền người xem, ghi lịch sử truy cập và tuân thủ quy định bảo vệ dữ liệu cá nhân.
 
-Tùy nghiệp vụ. Nếu bỏ sót fraud gây thiệt hại lớn, recall quan trọng. Nếu false positive làm ảnh hưởng khách hàng hoặc tốn chi phí kiểm duyệt, precision cũng quan trọng. Hệ thống dùng threshold để điều chỉnh trade-off.
+Trong phạm vi khóa luận, hệ thống chủ yếu minh họa kỹ thuật, nên phần bảo mật dữ liệu cá nhân chưa hoàn chỉnh như hệ thống thương mại.
 
-### 107. Vì sao cần threshold tuning?
+## 13. Hạn chế và hướng phát triển
 
-Model trả score liên tục. Threshold quyết định score nào thành fraud. Với dữ liệu mất cân bằng, threshold 0.5 thường không tối ưu, nên cần tune trên validation set theo F1, recall hoặc chi phí nghiệp vụ.
+### 68. Hạn chế lớn nhất của hệ thống hiện tại là gì?
 
-## 12. Câu hỏi về bảo mật và an toàn
+Dạ, hạn chế lớn nhất là hệ thống vẫn ở mức nghiên cứu và minh họa. Một số thành phần chưa ổn định như dịch vụ qua Colab/ngrok, dữ liệu trình diễn còn nhỏ, việc quản lý nhiều phiên bản mô hình còn đơn giản, và chưa có đầy đủ cơ chế bảo mật cho môi trường thật.
 
-### 108. Hệ thống có bảo vệ Neo4j khỏi query nguy hiểm không?
+Ngoài ra, chất lượng dự đoán phụ thuộc nhiều vào dữ liệu đầu vào và cách chọn cột quan hệ.
 
-Có ở mức prototype. Text2Cypher có read-only guard để chặn query ghi/xóa/admin và chỉ cho query dạng đọc. Tuy nhiên production vẫn nên dùng Neo4j account read-only riêng.
+### 69. Nếu phát triển tiếp, em sẽ cải thiện gì?
 
-### 109. Có rủi ro khi upload CSV không?
+Dạ, em sẽ cải thiện theo bốn hướng.
 
-Có. File lớn có thể tốn RAM, dữ liệu có thể chứa PII, và schema sai có thể làm pipeline lỗi. Hệ thống hiện có giới hạn file 500 MB và validation, nhưng production cần thêm streaming, scanning, masking và access control.
+Thứ nhất là triển khai các tiến trình Python trên máy chủ ổn định thay vì Colab/ngrok.
 
-### 110. Có lưu thông tin nhạy cảm không?
+Thứ hai là quản lý phiên bản mô hình rõ ràng hơn, để có thể so sánh, quay lại mô hình cũ và biết mô hình nào đang phục vụ dự đoán.
 
-Nếu user chọn cột nhạy cảm làm Neo4j Feature, property đó có thể được lưu trên Transaction. Vì vậy cần thiết kế schema review cẩn thận, loại bỏ PII không cần thiết và có chính sách bảo mật dữ liệu.
+Thứ ba là bổ sung hàng đợi tác vụ nền cho các bước nặng như huấn luyện và nạp dữ liệu lớn.
 
-### 111. Nếu LLM service bị tắt thì hệ thống còn chạy không?
+Thứ tư là tăng bảo mật, phân quyền và theo dõi vận hành nếu đưa vào sử dụng thực tế.
 
-Một số phần vẫn chạy nếu đã có schema/model metadata, ví dụ append theo schema cũ. Nhưng preview schema và Text2Cypher sẽ bị ảnh hưởng vì phụ thuộc LLM qua Colab/ngrok.
+### 70. Hệ thống có thể mở rộng cho bài toán khác không?
 
-### 112. Nếu GNN service bị tắt thì sao?
+Dạ, có. Cách làm CSV2Graph có thể áp dụng cho các bài toán có quan hệ trong dữ liệu, ví dụ phát hiện tài khoản giả, phân tích mạng lưới khách hàng, phát hiện giao dịch rửa tiền hoặc phân tích chuỗi cung ứng.
 
-Build graph và Neo4j ingest vẫn có thể chạy nếu không cần inference. Nhưng append file thiếu nhãn và cần model sẽ lỗi vì backend không gọi được `/predict-data-pt`.
-
-## 13. Câu hỏi về hạn chế và hướng phát triển
-
-### 113. Hạn chế lớn nhất của hệ thống là gì?
-
-Hạn chế lớn nhất là hệ thống còn ở mức prototype: phụ thuộc Colab/ngrok cho LLM, train GNN lâu, chưa có job queue, security chưa đầy đủ và model versioning còn đơn giản.
-
-### 114. Hạn chế của Text2Cypher là gì?
-
-LLM có thể sinh query sai ý nghĩa dù query chạy được. `EXPLAIN` chỉ kiểm tra cú pháp/schema, không kiểm tra nghiệp vụ. Do đó cần few-shot tốt, domain rules và hiển thị Cypher để người dùng kiểm tra.
-
-### 115. Hạn chế của model demo là gì?
-
-Model demo chỉ tốt khi dữ liệu append có schema và phân phối gần với dữ liệu train. Nếu dữ liệu khác nhiều, fraud_score có thể không đáng tin, cần train lại hoặc fine-tune.
-
-### 116. Nếu triển khai production, em sẽ cải tiến gì trước?
-
-Em sẽ ưu tiên thay Colab/ngrok bằng service ổn định, thêm job queue cho build/train dài, thêm model registry/versioning, dùng Neo4j read-only user cho Text2Cypher, thêm monitoring model drift và logging/audit.
-
-### 117. Làm sao để hỗ trợ nhiều dataset hoặc nhiều model?
-
-Cần versioning dataset, schema và model. Mỗi dataset nên có model riêng, feature schema riêng, threshold riêng và metadata riêng. MongoDB có thể mở rộng để lưu modelVersion, schemaVersion và activeModel theo database/dataset.
-
-### 118. Làm sao để cải thiện explainability?
-
-Có thể hiển thị top feature contribution, subgraph lân cận, shared entities, fraud_score, threshold, và lý do graph như “nhiều fraud cùng merchant/category”. Với GNN sâu hơn có thể dùng GNNExplainer hoặc phương pháp giải thích graph.
-
-### 119. Làm sao để xử lý CSV rất lớn?
-
-Cần streaming parse, chunk ingest, background job queue, progress tracking và không load toàn bộ CSV vào memory. Neo4j ingest cũng nên batch lớn và có retry.
-
-### 120. Làm sao để giảm false positive?
-
-Có thể tune threshold cao hơn, cải thiện feature/schema, train với dữ liệu mới hơn, thêm human feedback, calibrate probability và dùng rule nghiệp vụ kết hợp với model.
+Điều cần thay đổi là cách chọn đỉnh, cạnh, đặc trưng và nhãn phù hợp với từng bài toán.
 
 ## 14. Câu hỏi phản biện khó
 
-### 121. Nếu graph relation như merchant/category làm model học bias thì sao?
+### 71. Làm sao biết mô hình đúng chứ không chỉ đoán theo dữ liệu cũ?
 
-Đây là rủi ro có thật. Một merchant có nhiều fraud trong train có thể làm model đánh giá cao các giao dịch cùng merchant. Vì vậy cần kiểm tra bias, dùng validation/test, giới hạn relation group, và không dùng cột quá định danh nếu gây overfit.
+Dạ, cần đánh giá trên phần dữ liệu chưa dùng để huấn luyện. Nếu mô hình chỉ học thuộc dữ liệu cũ, kết quả trên dữ liệu mới sẽ kém. Vì vậy hệ thống cần chia dữ liệu thành phần huấn luyện, phần kiểm tra trong lúc huấn luyện và phần kiểm tra cuối.
 
-### 122. Nếu fraud pattern thay đổi theo thời gian thì sao?
+Ngoài ra, với dữ liệu giao dịch thay đổi theo thời gian, cần theo dõi chất lượng mô hình định kỳ và huấn luyện lại khi hành vi gian lận thay đổi.
 
-Đó là model drift. Hệ thống cần theo dõi performance theo thời gian, thu thập nhãn mới, retrain định kỳ và so sánh phân phối feature/score giữa dữ liệu train và dữ liệu mới.
+### 72. Vì sao không chỉ dùng luật nghiệp vụ?
 
-### 123. Nếu LLM chọn sai schema thì model có sai không?
+Dạ, luật nghiệp vụ rất hữu ích, ví dụ giao dịch vượt một số tiền nhất định hoặc xảy ra ở khu vực lạ. Tuy nhiên, gian lận có thể thay đổi cách thức để né luật cố định.
 
-Có thể. Vì vậy hệ thống có bước schema review để người dùng xác nhận lại. Backend cũng enforce rule như không cho target label hoặc node_id vào feature/relation.
+Mô hình học máy có thể học các mẫu phức tạp hơn từ dữ liệu, đặc biệt là mẫu quan hệ trong đồ thị. Trong thực tế, hướng tốt là kết hợp luật nghiệp vụ với mô hình, chứ không nhất thiết thay thế hoàn toàn.
 
-### 124. Vì sao không dùng một heterogeneous GNN trực tiếp trên Neo4j graph?
+### 73. Vì sao không dùng mô hình học máy thông thường thay vì F-GNN?
 
-Đó là hướng phát triển tốt. Tuy nhiên trong phạm vi hiện tại, hệ thống dùng F-GNN với homogeneous transaction graph để đơn giản hóa training và tensor pipeline. Neo4j graph dị thể phục vụ giải thích và truy vấn.
+Dạ, mô hình học máy thông thường phù hợp khi thông tin chủ yếu nằm trong từng dòng dữ liệu. Nhưng trong bài toán này, quan hệ giữa các giao dịch cũng quan trọng. F-GNN được chọn vì nó có thể học từ cả đặc trưng của giao dịch và cấu trúc liên kết xung quanh giao dịch.
 
-### 125. Nếu hội đồng hỏi “đóng góp khoa học” là gì?
+Nếu dữ liệu không có quan hệ rõ ràng, mô hình thông thường có thể đủ. Nhưng khi cần khai thác cụm giao dịch và các liên hệ gián tiếp, F-GNN phù hợp hơn.
 
-Em có thể trả lời: đóng góp của đề tài nằm ở việc thiết kế và hiện thực pipeline tích hợp Graph Database, GNN và Text2Cypher cho fraud analysis. Hệ thống không chỉ dự đoán nhãn mà còn lưu graph để phân tích quan hệ và hỗ trợ truy vấn tự nhiên.
+### 74. Vì sao không dùng mô hình đồ thị nhiều loại đỉnh trực tiếp cho F-GNN?
 
-### 126. Nếu hội đồng hỏi “đóng góp kỹ thuật” là gì?
+Dạ, đây là một hướng phát triển tốt. Hệ thống hiện tại ưu tiên cách biểu diễn đơn giản hơn để đảm bảo quy trình chạy được từ CSV đến dự đoán và đến Neo4j.
 
-Đóng góp kỹ thuật là xây dựng pipeline CSV2Graph, tách graph homogeneous cho F-GNN và graph heterogeneous cho Neo4j, quản lý metadata bằng MongoDB, tích hợp train/inference F-GNN, và xây dựng Text2Cypher có read-only guard/self-correction.
+Mô hình đồ thị nhiều loại đỉnh có thể biểu diễn đúng bản chất dữ liệu hơn, nhưng cũng làm phần chuẩn bị dữ liệu, huấn luyện và giải thích phức tạp hơn. Trong phạm vi khóa luận, em chọn hướng cân bằng giữa tính khả thi và khả năng trình bày.
 
-### 127. Nếu hội đồng hỏi “điểm yếu nhất của hệ thống” là gì?
+### 75. Nếu Text2Cypher sinh câu sai thì kết quả phân tích có đáng tin không?
 
-Em nên trả lời thẳng: điểm yếu là phụ thuộc LLM service qua Colab/ngrok và model demo chưa có model registry/monitoring production. Tuy nhiên kiến trúc đã tách module nên có thể thay bằng service ổn định và thêm versioning.
+Dạ, kết quả Text2Cypher cần được xem là công cụ hỗ trợ, không phải nguồn quyết định tuyệt đối. Hệ thống đã có các lớp kiểm tra để tránh câu truy vấn nguy hiểm và giảm lỗi cú pháp. Tuy nhiên, người dùng vẫn cần xem lại câu hỏi, kết quả và ngữ cảnh nghiệp vụ.
 
-### 128. Nếu hội đồng hỏi “hệ thống có tự động hoàn toàn không?”
+Trong hướng phát triển, có thể bổ sung phần hiển thị câu Cypher đã sinh, giải thích câu truy vấn bằng tiếng Việt và cho phép người dùng xác nhận trước khi chạy.
 
-Không hoàn toàn. Hệ thống tự động gợi ý schema và sinh Cypher, nhưng vẫn có bước người dùng xác nhận schema và kiểm tra kết quả. Đây là lựa chọn có chủ ý để giảm rủi ro trong bài toán fraud.
+### 76. Đóng góp kỹ thuật chính của đề tài là gì?
 
-### 129. Nếu hội đồng hỏi “em có chắc model đúng không?”
+Dạ, đóng góp chính là tích hợp một quy trình hoàn chỉnh cho dữ liệu giao dịch dạng CSV: tự hỗ trợ hiểu cấu trúc dữ liệu, chuyển sang đồ thị, tạo dữ liệu cho F-GNN, dự đoán giao dịch nghi vấn, lưu đồ thị vào Neo4j và cho phép truy vấn bằng ngôn ngữ tự nhiên.
 
-Không thể khẳng định tuyệt đối. Model được đánh giá bằng metric và fraud_score chỉ là hỗ trợ quyết định. Trong nghiệp vụ thật, kết quả cần được analyst kiểm tra, dùng thêm rule và cập nhật bằng phản hồi thực tế.
+Điểm quan trọng không chỉ nằm ở từng thành phần riêng lẻ, mà ở việc kết nối các thành phần thành một hệ thống có thể trình diễn và phân tích được từ đầu đến cuối.
 
-### 130. Nếu hội đồng hỏi “vì sao không chỉ dùng rule-based?”
+## 15. Câu trả lời ngắn nên thuộc
 
-Rule-based dễ giải thích nhưng khó bắt pattern mới và phải viết tay nhiều luật. GNN học từ dữ liệu và quan hệ graph, có thể phát hiện pattern phức tạp hơn. Tuy nhiên rule-based vẫn có thể kết hợp với model trong production.
+### 77. Một câu giới thiệu hệ thống
 
-## 15. Câu trả lời nhanh nên thuộc
+Dạ, hệ thống của em hỗ trợ phát hiện giao dịch gian lận bằng cách chuyển dữ liệu CSV thành đồ thị, dùng F-GNN để chấm điểm nghi ngờ và dùng Neo4j để phân tích quan hệ xung quanh các giao dịch đáng nghi.
 
-### Hệ thống làm gì trong một câu?
+### 78. Một câu nói về CSV2Graph
 
-Hệ thống chuyển CSV giao dịch thành graph, dùng F-GNN để dự đoán fraud, lưu graph vào Neo4j và cho phép người dùng hỏi graph bằng ngôn ngữ tự nhiên.
+Dạ, CSV2Graph là bước biến dữ liệu bảng thành dữ liệu đồ thị, để hệ thống nhìn được các mối liên hệ giữa giao dịch thay vì chỉ nhìn từng dòng độc lập.
 
-### Vì sao dùng graph?
+### 79. Một câu nói về F-GNN
 
-Vì fraud thường có tính liên kết; graph biểu diễn được các quan hệ như cùng merchant, category, state, job giữa các giao dịch.
+Dạ, F-GNN là mô hình học trên đồ thị, dùng cả thông tin của giao dịch và thông tin từ các giao dịch liên quan để dự đoán gian lận.
 
-### Vì sao dùng GNN?
+### 80. Một câu nói về Neo4j
 
-Vì GNN học được cả feature của transaction và thông tin từ các transaction liên quan trong graph.
+Dạ, Neo4j giúp lưu và truy vấn dữ liệu theo dạng mạng lưới, nên phù hợp để tìm cụm giao dịch nghi vấn và giải thích quan hệ giữa các giao dịch.
 
-### Vì sao dùng Neo4j?
+### 81. Một câu nói về Text2Cypher
 
-Vì Neo4j lưu và truy vấn graph tự nhiên bằng Cypher, phù hợp để phân tích cụm giao dịch nghi vấn.
+Dạ, Text2Cypher giúp người dùng đặt câu hỏi tự nhiên, sau đó hệ thống chuyển thành câu truy vấn Neo4j để lấy dữ liệu đồ thị mà không cần người dùng tự viết Cypher.
 
-### Vì sao dùng MongoDB?
+### 82. Một câu nói về MongoDB
 
-Vì MongoDB lưu metadata/schema/config/history dạng document, giúp append và inference nhất quán.
+Dạ, MongoDB lưu các thông tin mô tả và cấu hình của hệ thống, như cấu trúc dữ liệu, cách mã hóa cột, lịch sử chạy và lịch sử câu hỏi.
 
-### Vì sao append không gọi LLM lại?
+### 83. Một câu nói về điểm hơn so với SQL
 
-Vì append phải dùng schema cũ để giữ feature dimension, encoding và Neo4j schema ổn định.
+Dạ, SQL vẫn có thể truy vấn dữ liệu quan hệ, nhưng với bài toán cần nhìn mạng lưới giao dịch và các cụm liên quan, Neo4j và Cypher giúp biểu diễn, truy vấn và hiển thị quan hệ trực quan hơn.
 
-### `fraud_score` là gì?
+### 84. Một câu nói về hạn chế
 
-Là xác suất class fraud sau softmax của F-GNN.
+Dạ, hệ thống hiện tại là bản nghiên cứu và minh họa, nên còn hạn chế về độ ổn định dịch vụ, dữ liệu đánh giá, bảo mật và quản lý phiên bản mô hình khi đưa vào vận hành thật.
 
-### `is_fraud` trong append không nhãn đến từ đâu?
+## 16. Danh sách kiểm tra trước khi bảo vệ
 
-Nó là nhãn dự đoán từ model, được tạo bằng cách so sánh `fraud_score` với threshold.
+Trước khi trả lời hội đồng, em nên nhớ các ý sau:
 
-### `inferenceThreshold` là gì?
-
-Là threshold chung của model/dataset để đổi score thành nhãn 0/1.
-
-### Vì sao demo dùng pretrained model?
-
-Vì train GNN trên dữ liệu lớn mất thời gian, còn demo cần chứng minh luồng inference và phân tích graph trong vài phút.
-
-### Hạn chế lớn nhất?
-
-Phụ thuộc Colab/ngrok, train lâu, Text2Cypher chưa đảm bảo đúng ngữ nghĩa tuyệt đối và model/versioning chưa production-ready.
-
-## 16. Checklist trước khi trả lời hội đồng
-
-- Luôn phân biệt Neo4j graph và GNN graph.
-- Luôn nói `data.pt` là input tensor cho F-GNN.
-- Luôn nói append dùng schema cũ, không gọi LLM lại.
-- Luôn nói threshold là ngưỡng chung, không phải từng transaction.
-- Khi nói Text2Cypher, nhớ nhắc read-only guard và EXPLAIN.
-- Khi nói demo, nhấn mạnh pretrained model để tiết kiệm thời gian.
-- Khi bị hỏi hạn chế, trả lời thẳng và nêu hướng khắc phục.
+- Luôn giải thích bài toán trước, rồi mới nói công nghệ.
+- Khi nói về đồ thị, nhấn mạnh "mối liên hệ giữa các giao dịch".
+- Khi nói về F-GNN, nhấn mạnh "học từ giao dịch và các giao dịch liên quan".
+- Khi nói về Neo4j, nhấn mạnh "truy vấn và hiển thị quan hệ".
+- Khi nói về MongoDB, nhấn mạnh "lưu thông tin cấu hình và lịch sử vận hành".
+- Khi nói về Text2Cypher, nhấn mạnh "giúp người dùng không cần tự viết Cypher".
+- Khi bị hỏi về SQL, không phủ nhận SQL; hãy nói đồ thị phù hợp hơn khi quan hệ là trọng tâm.
+- Khi bị hỏi về hạn chế, trả lời thẳng rằng đây là bản nghiên cứu, chưa phải sản phẩm hoàn chỉnh.
+- Khi trình diễn huấn luyện bằng dữ liệu nhỏ, nói rõ đó là để minh họa quy trình, không dùng để kết luận chất lượng mô hình.
+- Khi có thuật ngữ khó, luôn dịch ra bằng ví dụ: mã giao dịch, cột tạo quan hệ, đặc trưng đầu vào, điểm nghi ngờ gian lận.
